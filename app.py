@@ -24,7 +24,7 @@ import pyvista as pv
 import base64
 
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
-st.title("🔬 MIM-Ops Pro v3.0: GitHub Actions Cloud Solver")
+st.title("🔬 MIM-Ops Pro v3.1: Oracle Cloud Edition")
 
 # ── Secrets ──
 ZAPIER_URL    = st.secrets.get("ZAPIER_URL", "")
@@ -58,6 +58,7 @@ _init("vtk_files", [])
 _init("last_synced_signal_id", None)
 _init("executed_params", None)
 _init("num_frames", 15)
+_init("mesh_res_mm", 0.30)
 _init("gate_ai_suggested", False)
 _init("gh_run_url", None)
 _init("result_frames", [])   # PNG frames downloaded from GitHub
@@ -769,6 +770,39 @@ with st.sidebar:
     )
     st.session_state["num_frames"] = num_frames_sel
 
+    # ── Mesh Resolution ──
+    mesh_res_options = [round(v, 2) for v in np.arange(0.10, 1.05, 0.05)]
+    mesh_res_sel = st.select_slider(
+        "🔬 Mesh Resolution (mm)",
+        options=mesh_res_options,
+        value=st.session_state.get("mesh_res_mm", 0.30),
+        help=(
+            "복셀 크기 (작을수록 고해상도 → 더 많은 솔리드 메시)\n"
+            "0.3mm 권장 (Oracle 6GB RAM 기준)\n"
+            "0.2mm 이하: 파트 크기에 따라 GitHub Actions 메모리 주의"
+        )
+    )
+    st.session_state["mesh_res_mm"] = mesh_res_sel
+
+    # 복셀 수 예측 표시
+    mesh_obj_preview = st.session_state.get("mesh")
+    if mesh_obj_preview is not None:
+        try:
+            vol = abs(mesh_obj_preview.volume)
+            est_voxels = int(vol / (mesh_res_sel ** 3) * 0.65)  # ~65% fill ratio 가정
+            if est_voxels < 200_000:
+                vox_color = "✅"
+            elif est_voxels < 800_000:
+                vox_color = "⚠️"
+            else:
+                vox_color = "❌"
+            st.caption(
+                f"{vox_color} 예상 복셀 수: **{est_voxels:,}개** "
+                f"(res={mesh_res_sel}mm | vol≈{vol:.0f}mm³)"
+            )
+        except Exception:
+            pass
+
     st.divider()
 
     # ── Run button (inside sidebar) ──
@@ -795,7 +829,7 @@ if st.sidebar.button("🚀 Run Cloud Simulation", type="primary", use_container_
                 ep = {
                     "signal_id": sig_id,
                     "gate_pos":  f"{_gx:.4f},{_gy:.4f},{_gz:.4f},{float(g_size):.4f}",
-                    "sim_opts":  f"{st.session_state['mat_name']},{_nf},0.5,{_screw}",
+                    "sim_opts":  f"{st.session_state['mat_name']},{_nf},{st.session_state.get('mesh_res_mm', 0.30)},{_screw}",
                     "viscosity": float(st.session_state["props"]["nu"]),
                     "density":   float(st.session_state["props"]["rho"]),
                     "temp":      float(temp_c),
