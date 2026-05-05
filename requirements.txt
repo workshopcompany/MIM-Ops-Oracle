@@ -1,13 +1,37 @@
-streamlit
-google-generativeai
-pandas
-numpy
-matplotlib
-plotly
-trimesh
-meshio
-requests
-streamlit-stl
-pyvista
-stpyvista
-scipy
+# ═══════════════════════════════════════════════
+# MIM-Ops Pro Requirements
+# ═══════════════════════════════════════════════
+
+# Core
+python-dotenv==1.0.0
+
+# Streamlit (UI)
+streamlit==1.28.1
+streamlit-lottie==0.0.5
+
+# Data Processing & Visualization
+numpy==1.24.3
+scipy==1.11.2
+pandas==2.0.3
+trimesh==3.21.8
+plotly==5.17.0
+pyvista==0.41.1
+
+# Plotting
+matplotlib==3.7.2
+
+# API Server (Flask)
+flask==2.3.3
+flask-cors==4.0.0
+requests==2.31.0
+
+# Oracle Cloud SDK
+oci==2.119.0
+python-dateutil==2.8.2
+
+# VTK (3D visualization)
+vtk==9.2.6
+
+# Additional
+python-multipart==0.0.6
+gunicorn==21.2.0

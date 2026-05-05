@@ -1,0 +1,155 @@
+# ═══════════════════════════════════════════════════════════════════════
+# Docker Compose - MIM-Ops Pro (로컬 개발 & 테스트)
+# 사용: docker-compose up
+# ═══════════════════════════════════════════════════════════════════════
+
+version: '3.9'
+
+services:
+  # ─────────────────── Flask API Server ───────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: mim-ops-api
+    
+    ports:
+      - "5000:5000"
+    
+    environment:
+      - FLASK_APP=api/server.py
+      - FLASK_ENV=development
+      - API_KEY=${API_KEY:-default-key-change-in-production}
+      - DEBUG=true
+      - API_HOST=0.0.0.0
+      - API_PORT=5000
+      - MAX_FILE_SIZE=104857600
+      - SOLVER_TIMEOUT=3600
+      - TEMP_DIR=/tmp/mim-ops
+      - RESULTS_DIR=/app/results
+      - USE_ORACLE=${USE_ORACLE:-false}
+      - ORACLE_COMPARTMENT_ID=${ORACLE_COMPARTMENT_ID:-}
+      - ORACLE_BUCKET_NAME=${ORACLE_BUCKET_NAME:-mim-ops-results}
+      - ORACLE_REGION=${ORACLE_REGION:-ap-seoul-1}
+    
+    volumes:
+      # 코드 실시간 반영 (개발 모드)
+      - ./:/app
+      # 결과 저장 디렉토리 (호스트와 공유)
+      - ./results:/app/results
+      # 로그 디렉토리
+      - ./logs:/app/logs
+      # Oracle 설정 파일 (선택사항)
+      - ~/.oci:/home/appuser/.oci:ro
+    
+    command: python -m flask run --host=0.0.0.0 --port=5000
+    
+    networks:
+      - mim-network
+    
+    depends_on:
+      - postgres
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─────────────────── Streamlit UI ───────────────────
+  streamlit:
+    image: python:3.10-slim
+    
+    container_name: mim-ops-streamlit
+    
+    ports:
+      - "8501:8501"
+    
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    
+    volumes:
+      - ./app:/app
+      - ./material_property.txt:/app/material_property.txt
+    
+    working_dir: /app
+    
+    command: >
+      bash -c "pip install -q streamlit plotly pyvista trimesh numpy scipy &&
+               streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0"
+    
+    networks:
+      - mim-network
+    
+    depends_on:
+      - api
+    
+    environment:
+      # .streamlit/secrets.toml 대신 환경 변수로 설정
+      - ORACLE_API_URL=http://api:5000
+      - ORACLE_API_KEY=${API_KEY:-default-key-change-in-production}
+
+  # ─────────────────── PostgreSQL (선택사항: Job 상태 저장) ───────────────────
+  postgres:
+    image: postgres:15-alpine
+    
+    container_name: mim-ops-postgres
+    
+    environment:
+      - POSTGRES_DB=mim_ops
+      - POSTGRES_USER=mim_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres-dev-password}
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    
+    networks:
+      - mim-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mim_user -d mim_ops"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    
+    # 프로덕션에서는 이 주석을 해제하고 데이터 지속성 설정
+    # restart: always
+
+# ─────────────────── Networks ───────────────────
+networks:
+  mim-network:
+    driver: bridge
+
+# ─────────────────── Volumes ───────────────────
+volumes:
+  postgres_data:
+    driver: local
+
+# ═════════════════════════════════════════════════════════════════════════
+# 사용 방법:
+# 
+# 1. 환경 설정:
+#    cp .env.example .env
+#    nano .env  # 필요시 수정
+# 
+# 2. 시작:
+#    docker-compose up -d
+# 
+# 3. 로그 확인:
+#    docker-compose logs -f api
+#    docker-compose logs -f streamlit
+# 
+# 4. 중지:
+#    docker-compose down
+# 
+# 5. 정리 (볼륨 포함):
+#    docker-compose down -v
+# 
+# 접속 URL:
+#    - Streamlit: http://localhost:8501
+#    - API: http://localhost:5000
+#    - API Health: http://localhost:5000/health
+# 
+# ═════════════════════════════════════════════════════════════════════════
