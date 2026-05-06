@@ -495,8 +495,14 @@ with tab1:
         uploaded_file = st.file_uploader("STL 파일 선택", type=["stl"])
         
         if uploaded_file:
-            st.session_state.mesh = load_stl_file(uploaded_file)
-            
+            # 파일이 바뀔 때만 다시 로드 (매 rerun마다 재로드 방지)
+            file_id = uploaded_file.file_id if hasattr(uploaded_file, 'file_id') else uploaded_file.name
+            if st.session_state.get("loaded_file_id") != file_id:
+                st.session_state.mesh = load_stl_file(uploaded_file)
+                st.session_state.loaded_file_id = file_id
+                st.session_state.gate_suggestions = []
+                st.session_state.gate_ai_advice = ""
+
             if st.session_state.mesh:
                 # 메시 정보
                 mesh = st.session_state.mesh
