@@ -13,7 +13,7 @@ streamlit-lottie==0.0.5
 numpy==1.24.3
 scipy==1.11.2
 pandas==2.0.3
-trimesh==3.21.8
+trimesh==3.21.7
 plotly==5.17.0
 pyvista==0.41.1
 
