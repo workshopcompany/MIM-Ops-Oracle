@@ -73,6 +73,7 @@ services:
     volumes:
       - ./app:/app
       - ./.streamlit:/app/.streamlit        # ← 이 줄 추가
+      - ./input:/app/input              # ← 이 줄 추가
 
       - ./material_property.txt:/app/material_property.txt
     
