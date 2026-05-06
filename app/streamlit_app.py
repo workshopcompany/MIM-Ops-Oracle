@@ -713,7 +713,7 @@ def submit_simulation(stl_file_bytes: bytes, params: dict) -> dict:
             timeout=30
         )
         
-        if response.status_code == 200:
+        if response.status_code in (200, 202):
             return response.json()
         else:
             st.error(f"시뮬레이션 제출 실패: {response.status_code}")
@@ -732,7 +732,7 @@ def get_job_status(job_id: str) -> dict:
         
         response = requests.get(url, headers=headers, timeout=10)
         
-        if response.status_code == 200:
+        if response.status_code in (200, 202):
             return response.json()
         else:
             return None
@@ -750,7 +750,7 @@ def get_results(job_id: str) -> dict:
         
         response = requests.get(url, headers=headers, timeout=30)
         
-        if response.status_code == 200:
+        if response.status_code in (200, 202):
             return response.json()
         else:
             return None
