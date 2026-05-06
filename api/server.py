@@ -196,6 +196,18 @@ def run_solver(job_id, stl_path, params):
         
         print(f"[Solver] Starting job {job_id}...")
         
+        # ✅ solver 폴더를 job 디렉토리에 복사 (실행 전)
+        import shutil
+        solver_src = "/app/solver"  # Docker 경로
+        solver_dst = os.path.join(job_dir, "solver")
+        if not os.path.exists(solver_dst):
+            try:
+                shutil.copytree(solver_src, solver_dst, dirs_exist_ok=True)
+                print(f"[Solver] ✓ Copied solver from {solver_src} to {solver_dst}")
+            except Exception as e:
+                print(f"[Solver] ⚠️ Failed to copy solver: {e}")
+                # 계속 진행 (혹은 실패 처리)
+        
         # Solver 명령 구성
         cmd = [
             "python", "solver/solver.py",
