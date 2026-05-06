@@ -189,16 +189,25 @@ def load_stl_file(uploaded_file):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
             tmp.write(uploaded_file.getbuffer())
             tmp_path = tmp.name
-        
-        mesh = trimesh.load(tmp_path)
-        if isinstance(mesh, trimesh.base.Trimesh):
+
+        # force='mesh' 로 항상 Trimesh 반환 시도
+        mesh = trimesh.load(tmp_path, force='mesh')
+
+        if isinstance(mesh, trimesh.base.Trimesh) and len(mesh.faces) > 0:
             return mesh
-        elif hasattr(mesh, 'geometry'):
-            # MultiObject 처리
-            meshes = [geom for geom in mesh.geometry]
-            if meshes:
-                return trimesh.util.concatenate(meshes)
-        
+
+        # force='mesh' 실패 시 Scene 처리
+        loaded = trimesh.load(tmp_path)
+        if isinstance(loaded, trimesh.base.Trimesh) and len(loaded.faces) > 0:
+            return loaded
+        elif hasattr(loaded, 'geometry') and loaded.geometry:
+            # Scene → geometry dict의 values()가 Trimesh 객체들
+            geom_list = [g for g in loaded.geometry.values()
+                         if isinstance(g, trimesh.base.Trimesh) and len(g.faces) > 0]
+            if geom_list:
+                return trimesh.util.concatenate(geom_list)
+
+        st.error("STL 파일에서 메시를 읽을 수 없습니다. 파일을 확인하세요.")
         return None
     except Exception as e:
         st.error(f"STL 로드 오류: {e}")
@@ -207,14 +216,16 @@ def load_stl_file(uploaded_file):
 def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
     """메시와 게이트 위치를 3D로 시각화"""
     try:
-        # 메시 좌표
         vertices = mesh.vertices
         faces = mesh.faces
+
+        if len(vertices) == 0 or len(faces) == 0:
+            st.error("메시 데이터가 비어 있습니다. STL 파일을 확인하세요.")
+            return None
         
         fig = go.Figure()
         
         # 메시 표면
-        fig.add_trace(go.Mesh3d(
             x=vertices[:, 0],
             y=vertices[:, 1],
             z=vertices[:, 2],
