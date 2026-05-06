@@ -21,8 +21,8 @@ import json
 import time
 from datetime import datetime
 import trimesh
-import plotly.graph_objects as go
-import pyvista as pv
+import streamlit.components.v1 as components
+import base64
 
 # ═══════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -214,7 +214,7 @@ def load_stl_file(uploaded_file):
         return None
 
 def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
-    """메시와 게이트 위치를 3D로 시각화"""
+    """Three.js WebGL 기반 3D 시각화 (Plotly 대체)"""
     try:
         vertices = mesh.vertices
         faces = mesh.faces
@@ -222,60 +222,196 @@ def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
         if len(vertices) == 0 or len(faces) == 0:
             st.error("메시 데이터가 비어 있습니다. STL 파일을 확인하세요.")
             return None
-        
-        fig = go.Figure()
-        
-        # 메시 표면
-        fig.add_trace(go.Mesh3d(
-            x=vertices[:, 0],
-            y=vertices[:, 1],
-            z=vertices[:, 2],
-            i=faces[:, 0],
-            j=faces[:, 1],
-            k=faces[:, 2],
-            opacity=0.7,
-            color="lightblue",
-            name="Part"
-        ))
-        
-        # 게이트 위치 표시
-        if gate_pos and len(gate_pos) == 3:
-            fig.add_trace(go.Scatter3d(
-                x=[gate_pos[0]],
-                y=[gate_pos[1]],
-                z=[gate_pos[2]],
-                mode="markers+text",
-                marker=dict(size=8, color="red"),
-                text=["Gate"],
-                textposition="top center",
-                name="Gate Position"
-            ))
-        
-        # 레이아웃 설정
+
+        # 메시를 정규화 (중심=0, 스케일 통일)
         bounds = mesh.bounds
-        center = mesh.centroid
-        max_range = np.max(bounds[1] - bounds[0]) / 2.0
-        
-        fig.update_layout(
-            title="3D Part Visualization with Gate Position",
-            scene=dict(
-                xaxis_title="X (mm)",
-                yaxis_title="Y (mm)",
-                zaxis_title="Z (mm)",
-                xaxis=dict(range=[bounds[0][0], bounds[1][0]]),
-                yaxis=dict(range=[bounds[0][1], bounds[1][1]]),
-                zaxis=dict(range=[bounds[0][2], bounds[1][2]]),
-                camera=dict(
-                    eye=dict(x=1.2, y=1.2, z=1.0),
-                    center=dict(x=0, y=0, z=0)
-                )
-            ),
-            height=700,
-            hovermode="closest",
-            showlegend=True
-        )
-        
-        return fig
+        center = ((bounds[0] + bounds[1]) / 2).tolist()
+        scale = float(np.max(bounds[1] - bounds[0]))
+
+        # vertices / faces JSON 직렬화 (다운샘플: 최대 30000 face)
+        MAX_FACES = 30000
+        if len(faces) > MAX_FACES:
+            idx = np.random.choice(len(faces), MAX_FACES, replace=False)
+            faces_export = faces[idx]
+        else:
+            faces_export = faces
+
+        # Three.js에 넘길 flat array
+        verts_flat = vertices.flatten().tolist()
+        faces_flat = faces_export.flatten().tolist()
+
+        gate_x = float(gate_pos[0]) if gate_pos and len(gate_pos) == 3 else None
+        gate_y = float(gate_pos[1]) if gate_pos and len(gate_pos) == 3 else None
+        gate_z = float(gate_pos[2]) if gate_pos and len(gate_pos) == 3 else None
+        show_gate = "true" if gate_x is not None else "false"
+
+        gate_js = f"[{gate_x},{gate_y},{gate_z}]" if gate_x is not None else "null"
+
+        html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ margin:0; background:#1a1a2e; overflow:hidden; }}
+  canvas {{ display:block; }}
+  #info {{ position:absolute; top:8px; left:8px; color:#aef; font:12px monospace;
+           background:rgba(0,0,0,.5); padding:4px 8px; border-radius:4px; }}
+  #legend {{ position:absolute; bottom:8px; left:8px; color:#eee; font:11px monospace;
+             background:rgba(0,0,0,.5); padding:4px 8px; border-radius:4px; }}
+</style>
+</head>
+<body>
+<div id="info">MIM-Ops | 드래그: 회전 &nbsp; 스크롤: 줌 &nbsp; 우클릭: 이동</div>
+<div id="legend">
+  <span style="color:#7ec8e3">■</span> Part Mesh &nbsp;
+  {'<span style="color:#ff4444">●</span> Gate Position' if gate_x is not None else ''}
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── Scene setup ──────────────────────────────────────────
+const W = window.innerWidth, H = window.innerHeight;
+const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+renderer.setSize(W, H);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a2e);
+
+const camera = new THREE.PerspectiveCamera(45, W/H, 0.001, 10000);
+camera.position.set(0, 0, 3);
+
+// ── Lights ──────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
+dir1.position.set(1, 2, 2);
+scene.add(dir1);
+const dir2 = new THREE.DirectionalLight(0x4488ff, 0.4);
+dir2.position.set(-2, -1, -1);
+scene.add(dir2);
+
+// ── Grid helper ─────────────────────────────────────────
+const grid = new THREE.GridHelper(4, 20, 0x333355, 0x222244);
+scene.add(grid);
+
+// ── Build mesh from Python data ─────────────────────────
+const verts = new Float32Array({json.dumps(verts_flat)});
+const idxs  = new Uint32Array({json.dumps(faces_flat)});
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+geo.setIndex(new THREE.BufferAttribute(idxs, 1));
+geo.computeVertexNormals();
+
+// 정규화: bounding box 기반 중심 이동 + 스케일
+geo.computeBoundingBox();
+const bb = geo.boundingBox;
+const cx = (bb.min.x + bb.max.x) / 2;
+const cy = (bb.min.y + bb.max.y) / 2;
+const cz = (bb.min.z + bb.max.z) / 2;
+const sc = Math.max(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z);
+
+const mat = new THREE.MeshPhongMaterial({{
+  color: 0x7ec8e3,
+  opacity: 0.82,
+  transparent: true,
+  side: THREE.DoubleSide,
+  shininess: 60,
+}});
+const meshObj = new THREE.Mesh(geo, mat);
+
+// Wireframe overlay
+const wireMat = new THREE.MeshBasicMaterial({{ color: 0x2255aa, wireframe: true, opacity: 0.15, transparent: true }});
+const wireObj = new THREE.Mesh(geo, wireMat);
+
+const group = new THREE.Group();
+group.add(meshObj);
+group.add(wireObj);
+
+// 중심 정렬 + 정규화 스케일
+group.position.set(-cx, -cy, -cz);
+const normScale = 2.0 / sc;
+group.scale.setScalar(normScale);
+
+scene.add(group);
+
+// ── Gate position marker ─────────────────────────────────
+const gateData = {gate_js};
+if (gateData) {{
+  const gx = (gateData[0] - cx) * normScale;
+  const gy = (gateData[1] - cy) * normScale;
+  const gz = (gateData[2] - cz) * normScale;
+
+  // 구체 마커
+  const sGeo = new THREE.SphereGeometry(0.045, 16, 16);
+  const sMat = new THREE.MeshPhongMaterial({{ color: 0xff3333, emissive: 0xff0000, emissiveIntensity: 0.4 }});
+  const sphere = new THREE.Mesh(sGeo, sMat);
+  sphere.position.set(gx, gy, gz);
+  scene.add(sphere);
+
+  // 수직 라인 (표면 → 아래)
+  const linePts = [new THREE.Vector3(gx, gy, gz), new THREE.Vector3(gx, gy, gz - 0.3)];
+  const lineGeo = new THREE.BufferGeometry().setFromPoints(linePts);
+  const lineMat = new THREE.LineBasicMaterial({{ color: 0xff6666 }});
+  scene.add(new THREE.Line(lineGeo, lineMat));
+}}
+
+// ── Orbit controls (수동 구현) ───────────────────────────
+let isDragging = false, isRight = false;
+let prevX = 0, prevY = 0;
+let theta = 0.5, phi = 0.8, radius = 3;
+let panX = 0, panY = 0;
+
+function updateCamera() {{
+  camera.position.x = panX + radius * Math.sin(phi) * Math.sin(theta);
+  camera.position.y = panY + radius * Math.cos(phi);
+  camera.position.z = radius * Math.sin(phi) * Math.cos(theta);
+  camera.lookAt(panX, panY, 0);
+}}
+updateCamera();
+
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+renderer.domElement.addEventListener('mousedown', e => {{
+  isDragging = true;
+  isRight = e.button === 2;
+  prevX = e.clientX; prevY = e.clientY;
+}});
+window.addEventListener('mouseup', () => isDragging = false);
+window.addEventListener('mousemove', e => {{
+  if (!isDragging) return;
+  const dx = e.clientX - prevX, dy = e.clientY - prevY;
+  prevX = e.clientX; prevY = e.clientY;
+  if (isRight) {{
+    panX -= dx * 0.005; panY += dy * 0.005;
+  }} else {{
+    theta -= dx * 0.01;
+    phi = Math.max(0.05, Math.min(Math.PI - 0.05, phi - dy * 0.01));
+  }}
+  updateCamera();
+}});
+renderer.domElement.addEventListener('wheel', e => {{
+  radius = Math.max(0.5, Math.min(20, radius + e.deltaY * 0.005));
+  updateCamera();
+}});
+window.addEventListener('resize', () => {{
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}});
+
+// ── Animate ──────────────────────────────────────────────
+function animate() {{
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}}
+animate();
+</script>
+</body>
+</html>
+"""
+        return html
     except Exception as e:
         st.error(f"3D 시각화 오류: {e}")
         return None
@@ -590,12 +726,12 @@ with tab1:
                 
                 # 3D 시각화
                 st.subheader("3D Visualization")
-                fig = visualize_mesh_with_gate(
+                html_3d = visualize_mesh_with_gate(
                     mesh,
                     [st.session_state.gate_x, st.session_state.gate_y, st.session_state.gate_z]
                 )
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                if html_3d:
+                    components.html(html_3d, height=520, scrolling=False)
     
     # ─── 오른쪽: 시뮬레이션 파라미터 ───
     with col2:
