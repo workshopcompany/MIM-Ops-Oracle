@@ -3,7 +3,7 @@
 # Oracle Cloud Compute Instance 배포용
 # ═══════════════════════════════════════════════════════════════════════
 
-FROM python:3.10-slim
+FROM python:3.10-slim-bookworm
 
 LABEL maintainer="workshopcompany"
 LABEL description="MIM-Ops Pro API Server - Oracle Cloud Edition"
@@ -14,8 +14,10 @@ WORKDIR /app
 # ─────────────────── 시스템 의존성 설치 ───────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # VTK 및 그래픽 라이브러리
-    libvtk9-dev \
-    libvtk9.2 \
+# 변경 후
+    libvtk9.1 \
+    libgl1 \
+    libgomp1 \
     # 빌드 도구
     build-essential \
     git \
