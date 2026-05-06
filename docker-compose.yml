@@ -3,7 +3,6 @@
 # 사용: docker-compose up
 # ═══════════════════════════════════════════════════════════════════════
 
-version: '3.9'
 
 services:
   # ─────────────────── Flask API Server ───────────────────
@@ -49,7 +48,8 @@ services:
       - mim-network
     
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
@@ -59,7 +59,7 @@ services:
 
   # ─────────────────── Streamlit UI ───────────────────
   streamlit:
-    image: python:3.10-slim
+    image: python:3.10-slim-bookworm
     
     container_name: mim-ops-streamlit
     
@@ -72,24 +72,23 @@ services:
     
     volumes:
       - ./app:/app
+      - ./.streamlit:/app/.streamlit        # ← 이 줄 추가
+
       - ./material_property.txt:/app/material_property.txt
     
     working_dir: /app
     
     command: >
-      bash -c "pip install -q streamlit plotly pyvista trimesh numpy scipy &&
+      bash -c "pip install --no-cache-dir --default-timeout=10000 streamlit==1.28.1 plotly pyvista numpy scipy &&
                streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0"
     
     networks:
       - mim-network
     
     depends_on:
-      - api
-    
-    environment:
-      # .streamlit/secrets.toml 대신 환경 변수로 설정
-      - ORACLE_API_URL=http://api:5000
-      - ORACLE_API_KEY=${API_KEY:-default-key-change-in-production}
+      api:
+        condition: service_healthy
+
 
   # ─────────────────── PostgreSQL (선택사항: Job 상태 저장) ───────────────────
   postgres:
@@ -107,6 +106,7 @@ services:
     
     networks:
       - mim-network
+  
     
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mim_user -d mim_ops"]
@@ -116,6 +116,7 @@ services:
     
     # 프로덕션에서는 이 주석을 해제하고 데이터 지속성 설정
     # restart: always
+
 
 # ─────────────────── Networks ───────────────────
 networks:
