@@ -252,16 +252,27 @@ def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
             ))
         
         # 레이아웃 설정
+        bounds = mesh.bounds
+        center = mesh.centroid
+        max_range = np.max(bounds[1] - bounds[0]) / 2.0
+        
         fig.update_layout(
             title="3D Part Visualization with Gate Position",
             scene=dict(
                 xaxis_title="X (mm)",
                 yaxis_title="Y (mm)",
                 zaxis_title="Z (mm)",
-                aspectmode="data"
+                xaxis=dict(range=[bounds[0][0], bounds[1][0]]),
+                yaxis=dict(range=[bounds[0][1], bounds[1][1]]),
+                zaxis=dict(range=[bounds[0][2], bounds[1][2]]),
+                camera=dict(
+                    eye=dict(x=1.2, y=1.2, z=1.0),
+                    center=dict(x=0, y=0, z=0)
+                )
             ),
-            height=600,
-            hovermode="closest"
+            height=700,
+            hovermode="closest",
+            showlegend=True
         )
         
         return fig
@@ -495,6 +506,23 @@ with tab1:
         st.subheader("1️⃣ Part Upload")
         uploaded_file = st.file_uploader("STL 파일 선택", type=["stl"])
         
+        # ✅ 기본 part.stl 파일 자동 로드 (업로드 없을 때)
+        if not uploaded_file:
+            default_stl_path = "/app/input/part.stl"
+            if os.path.exists(default_stl_path):
+                if st.session_state.get("loaded_file_id") != "default_part.stl":
+                    try:
+                        mesh = trimesh.load(default_stl_path, force='mesh')
+                        if isinstance(mesh, trimesh.base.Trimesh) and len(mesh.faces) > 0:
+                            st.session_state.mesh = mesh
+                            st.session_state.loaded_file_id = "default_part.stl"
+                            st.session_state.gate_suggestions = []
+                            st.session_state.gate_ai_advice = ""
+                            st.success("✅ 기본 STL 파일(input/part.stl) 자동 로드됨")
+                    except Exception as e:
+                        st.error(f"기본 파일 로드 오류: {e}")
+        
+        # 업로드된 파일 처리
         if uploaded_file:
             # 파일이 바뀔 때만 다시 로드 (매 rerun마다 재로드 방지)
             file_id = uploaded_file.file_id if hasattr(uploaded_file, 'file_id') else uploaded_file.name
