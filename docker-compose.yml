@@ -78,8 +78,9 @@ services:
     
     working_dir: /app
     
+    
     command: >
-      bash -c "pip install --no-cache-dir --default-timeout=10000 streamlit==1.28.1 plotly pyvista numpy scipy &&
+      bash -c "pip install --no-cache-dir --default-timeout=10000 streamlit==1.28.1 plotly pyvista numpy scipy trimesh &&
                streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0"
     
     networks:
