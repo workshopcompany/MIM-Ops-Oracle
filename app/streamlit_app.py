@@ -226,6 +226,7 @@ def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
         fig = go.Figure()
         
         # 메시 표면
+        fig.add_trace(go.Mesh3d(
             x=vertices[:, 0],
             y=vertices[:, 1],
             z=vertices[:, 2],
