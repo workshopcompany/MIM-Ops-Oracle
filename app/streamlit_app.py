@@ -261,8 +261,22 @@ def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
 # 게이트 위치 추천 함수들
 # ═══════════════════════════════════════════════════════════
 
+def snap_to_mesh_surface(mesh: trimesh.Trimesh, point: np.ndarray) -> np.ndarray:
+    """rtree 없이 메시 표면의 가장 가까운 점 계산 (삼각형 중심 기반)"""
+    try:
+        # 각 삼각형의 중심점 계산
+        triangles = mesh.vertices[mesh.faces]           # (N, 3, 3)
+        tri_centers = triangles.mean(axis=1)            # (N, 3)
+        # 가장 가까운 삼각형 중심 찾기
+        dists = np.linalg.norm(tri_centers - point, axis=1)
+        closest_tri_idx = int(np.argmin(dists))
+        return tri_centers[closest_tri_idx]
+    except Exception:
+        return point  # 실패 시 원래 점 반환
+
+
 def suggest_gate_positions(mesh: trimesh.Trimesh) -> list:
-    """게이트 위치 자동 추천 (기하학적 분석)"""
+    """게이트 위치 자동 추천 (기하학적 분석, rtree 불필요)"""
     suggestions = []
     
     try:
@@ -272,10 +286,10 @@ def suggest_gate_positions(mesh: trimesh.Trimesh) -> list:
         
         # 1. Bottom-Center
         pt1 = np.array([center[0], center[1], bounds[0][2]])
-        closest_pt, _, _ = trimesh.proximity.closest_point(mesh, [pt1])
+        snapped1 = snap_to_mesh_surface(mesh, pt1)
         suggestions.append({
             "label": "Bottom-Center",
-            "position": closest_pt[0].tolist(),
+            "position": snapped1.tolist(),
             "reason": "균형 잡힌 충전"
         })
         
@@ -283,20 +297,20 @@ def suggest_gate_positions(mesh: trimesh.Trimesh) -> list:
         axis = int(np.argmax(dims))
         pt2 = center.copy()
         pt2[axis] = bounds[0][axis]
-        closest_pt2, _, _ = trimesh.proximity.closest_point(mesh, [pt2])
+        snapped2 = snap_to_mesh_surface(mesh, pt2)
         axis_label = ["X-Min Side", "Y-Min Side", "Z-Min Side"][axis]
         suggestions.append({
             "label": axis_label,
-            "position": closest_pt2[0].tolist(),
+            "position": snapped2.tolist(),
             "reason": "긴 축 방향 충전"
         })
         
         # 3. Top-Center (균형)
         pt3 = np.array([center[0], center[1], bounds[1][2]])
-        closest_pt3, _, _ = trimesh.proximity.closest_point(mesh, [pt3])
+        snapped3 = snap_to_mesh_surface(mesh, pt3)
         suggestions.append({
             "label": "Top-Center (Balanced)",
-            "position": closest_pt3[0].tolist(),
+            "position": snapped3.tolist(),
             "reason": "상단 중심 충전"
         })
         
