@@ -17,7 +17,8 @@ st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops Pro v3.2: Oracle Cloud Edition")
 
 # ── Configuration ──
-ORACLE_API_URL = st.secrets.get("ORACLE_API_URL", "http://localhost:5000")
+# 변경 후
+ORACLE_API_URL = st.secrets.get("ORACLE_API_URL", "http://mim-ops-api:5000")
 ORACLE_API_KEY = st.secrets.get("ORACLE_API_KEY", "default-key")
 
 MATERIAL_FILE = os.path.join(os.path.dirname(__file__), "material_property.txt")
