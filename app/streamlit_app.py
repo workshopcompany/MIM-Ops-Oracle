@@ -214,203 +214,338 @@ def load_stl_file(uploaded_file):
         return None
 
 def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
-    """Three.js WebGL 기반 3D 시각화 (Plotly 대체)"""
+    """
+    순수 Python → Canvas 2D 소프트웨어 렌더러 기반 3D 시각화.
+    외부 CDN 의존성 없음 — Docker 오프라인/iframe 환경에서도 100% 작동.
+    """
     try:
-        vertices = mesh.vertices
-        faces = mesh.faces
+        vertices = mesh.vertices.copy()
+        faces = mesh.faces.copy()
 
         if len(vertices) == 0 or len(faces) == 0:
-            st.error("메시 데이터가 비어 있습니다. STL 파일을 확인하세요.")
+            st.error("메시 데이터가 비어 있습니다.")
             return None
 
-        # 메시를 정규화 (중심=0, 스케일 통일)
+        # ── 정규화: 중심 = 0, 최대 치수 = 2 ──────────────
         bounds = mesh.bounds
-        center = ((bounds[0] + bounds[1]) / 2).tolist()
-        scale = float(np.max(bounds[1] - bounds[0]))
+        center = (bounds[0] + bounds[1]) / 2.0
+        scale  = float(np.max(bounds[1] - bounds[0]))
+        if scale < 1e-9:
+            scale = 1.0
 
-        # vertices / faces JSON 직렬화 (다운샘플: 최대 30000 face)
-        MAX_FACES = 30000
+        vn = ((vertices - center) / scale * 2.0)  # [-1, 1] 범위
+
+        # ── 다운샘플 (최대 8000 삼각형 — JS 배열 크기 제한 고려) ──
+        MAX_FACES = 8000
         if len(faces) > MAX_FACES:
             idx = np.random.choice(len(faces), MAX_FACES, replace=False)
-            faces_export = faces[idx]
+            faces_ds = faces[idx]
         else:
-            faces_export = faces
+            faces_ds = faces
 
-        # Three.js에 넘길 flat array
-        verts_flat = vertices.flatten().tolist()
-        faces_flat = faces_export.flatten().tolist()
+        # ── 삼각형별 법선 계산 (face normal → 음영) ──────
+        v0 = vn[faces_ds[:, 0]]
+        v1 = vn[faces_ds[:, 1]]
+        v2 = vn[faces_ds[:, 2]]
+        normals = np.cross(v1 - v0, v2 - v0)
+        nlen = np.linalg.norm(normals, axis=1, keepdims=True)
+        nlen[nlen < 1e-9] = 1.0
+        normals /= nlen
 
-        gate_x = float(gate_pos[0]) if gate_pos and len(gate_pos) == 3 else None
-        gate_y = float(gate_pos[1]) if gate_pos and len(gate_pos) == 3 else None
-        gate_z = float(gate_pos[2]) if gate_pos and len(gate_pos) == 3 else None
-        show_gate = "true" if gate_x is not None else "false"
+        light = np.array([0.6, 0.8, 1.0])
+        light /= np.linalg.norm(light)
+        brightness = np.clip(np.dot(normals, light), 0.1, 1.0)  # [0.1, 1.0]
 
-        gate_js = f"[{gate_x},{gate_y},{gate_z}]" if gate_x is not None else "null"
+        # ── 삼각형 중심 Z값 (페인터 알고리즘 정렬용) ─────
+        tri_centers = (v0 + v1 + v2) / 3.0
+        z_order = np.argsort(tri_centers[:, 2])  # 가까운 것 나중에 그림
 
-        html = f"""
-<!DOCTYPE html>
+        # ── Gate 정규화 좌표 ──────────────────────────────
+        has_gate = gate_pos and len(gate_pos) == 3
+        if has_gate:
+            gn = ((np.array(gate_pos, dtype=float) - center) / scale * 2.0).tolist()
+        else:
+            gn = [0.0, 0.0, 0.0]
+
+        # ── JSON 직렬화 ───────────────────────────────────
+        # 각 삼각형: [x0,y0,z0, x1,y1,z1, x2,y2,z2, brightness]
+        tri_data = []
+        for fi in z_order:
+            f = faces_ds[fi]
+            b = float(brightness[fi])
+            tri_data.append([
+                float(vn[f[0],0]), float(vn[f[0],1]), float(vn[f[0],2]),
+                float(vn[f[1],0]), float(vn[f[1],1]), float(vn[f[1],2]),
+                float(vn[f[2],0]), float(vn[f[2],1]), float(vn[f[2],2]),
+                b
+            ])
+
+        tri_json   = json.dumps(tri_data)
+        gate_json  = json.dumps(gn)
+        has_gate_js = "true" if has_gate else "false"
+
+        html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  body {{ margin:0; background:#1a1a2e; overflow:hidden; }}
-  canvas {{ display:block; }}
-  #info {{ position:absolute; top:8px; left:8px; color:#aef; font:12px monospace;
-           background:rgba(0,0,0,.5); padding:4px 8px; border-radius:4px; }}
-  #legend {{ position:absolute; bottom:8px; left:8px; color:#eee; font:11px monospace;
-             background:rgba(0,0,0,.5); padding:4px 8px; border-radius:4px; }}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ background:#111827; display:flex; flex-direction:column;
+       align-items:center; font-family:monospace; color:#9ca3af; }}
+#wrap {{ position:relative; width:100%; }}
+canvas {{ display:block; width:100%; cursor:grab; }}
+canvas:active {{ cursor:grabbing; }}
+#hud {{ position:absolute; top:6px; left:8px; font-size:11px;
+        background:rgba(0,0,0,.55); padding:3px 8px; border-radius:4px;
+        pointer-events:none; }}
+#legend {{ position:absolute; bottom:6px; left:8px; font-size:11px;
+           background:rgba(0,0,0,.55); padding:3px 8px; border-radius:4px;
+           pointer-events:none; }}
+#bar {{ width:100%; padding:4px 10px; display:flex; gap:12px;
+        background:#1f2937; font-size:11px; align-items:center; }}
+button {{ background:#374151; color:#d1d5db; border:none; border-radius:4px;
+          padding:2px 10px; cursor:pointer; font-size:11px; }}
+button:hover {{ background:#4b5563; }}
 </style>
 </head>
 <body>
-<div id="info">MIM-Ops | 드래그: 회전 &nbsp; 스크롤: 줌 &nbsp; 우클릭: 이동</div>
-<div id="legend">
-  <span style="color:#7ec8e3">■</span> Part Mesh &nbsp;
-  {'<span style="color:#ff4444">●</span> Gate Position' if gate_x is not None else ''}
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">드래그: 회전 &nbsp;|&nbsp; 스크롤: 줌 &nbsp;|&nbsp; Shift+드래그: 이동</div>
+  <div id="legend">
+    <span style="color:#7ec8e3">■</span> Part &nbsp;
+    {'<span style="color:#ff4444">●</span> Gate' if has_gate else ''}
+  </div>
 </div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<div id="bar">
+  <button onclick="resetView()">⟳ Reset</button>
+  <button onclick="toggleWire()">⬡ Wire</button>
+  <span id="info" style="color:#6b7280"></span>
+</div>
+
 <script>
-// ── Scene setup ──────────────────────────────────────────
-const W = window.innerWidth, H = window.innerHeight;
-const renderer = new THREE.WebGLRenderer({{ antialias: true }});
-renderer.setSize(W, H);
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.shadowMap.enabled = true;
-document.body.appendChild(renderer.domElement);
+const TRIS   = {tri_json};
+const GATE   = {gate_json};
+const HAS_GATE = {has_gate_js};
+const N_TRIS = TRIS.length;
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1a2e);
+document.getElementById('info').textContent =
+  N_TRIS.toLocaleString() + ' triangles';
 
-const camera = new THREE.PerspectiveCamera(45, W/H, 0.001, 10000);
-camera.position.set(0, 0, 3);
+// ── Canvas setup ──────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W, H;
 
-// ── Lights ──────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
-dir1.position.set(1, 2, 2);
-scene.add(dir1);
-const dir2 = new THREE.DirectionalLight(0x4488ff, 0.4);
-dir2.position.set(-2, -1, -1);
-scene.add(dir2);
-
-// ── Grid helper ─────────────────────────────────────────
-const grid = new THREE.GridHelper(4, 20, 0x333355, 0x222244);
-scene.add(grid);
-
-// ── Build mesh from Python data ─────────────────────────
-const verts = new Float32Array({json.dumps(verts_flat)});
-const idxs  = new Uint32Array({json.dumps(faces_flat)});
-
-const geo = new THREE.BufferGeometry();
-geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-geo.setIndex(new THREE.BufferAttribute(idxs, 1));
-geo.computeVertexNormals();
-
-// 정규화: bounding box 기반 중심 이동 + 스케일
-geo.computeBoundingBox();
-const bb = geo.boundingBox;
-const cx = (bb.min.x + bb.max.x) / 2;
-const cy = (bb.min.y + bb.max.y) / 2;
-const cz = (bb.min.z + bb.max.z) / 2;
-const sc = Math.max(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z);
-
-const mat = new THREE.MeshPhongMaterial({{
-  color: 0x7ec8e3,
-  opacity: 0.82,
-  transparent: true,
-  side: THREE.DoubleSide,
-  shininess: 60,
-}});
-const meshObj = new THREE.Mesh(geo, mat);
-
-// Wireframe overlay
-const wireMat = new THREE.MeshBasicMaterial({{ color: 0x2255aa, wireframe: true, opacity: 0.15, transparent: true }});
-const wireObj = new THREE.Mesh(geo, wireMat);
-
-const group = new THREE.Group();
-group.add(meshObj);
-group.add(wireObj);
-
-// 중심 정렬 + 정규화 스케일
-group.position.set(-cx, -cy, -cz);
-const normScale = 2.0 / sc;
-group.scale.setScalar(normScale);
-
-scene.add(group);
-
-// ── Gate position marker ─────────────────────────────────
-const gateData = {gate_js};
-if (gateData) {{
-  const gx = (gateData[0] - cx) * normScale;
-  const gy = (gateData[1] - cy) * normScale;
-  const gz = (gateData[2] - cz) * normScale;
-
-  // 구체 마커
-  const sGeo = new THREE.SphereGeometry(0.045, 16, 16);
-  const sMat = new THREE.MeshPhongMaterial({{ color: 0xff3333, emissive: 0xff0000, emissiveIntensity: 0.4 }});
-  const sphere = new THREE.Mesh(sGeo, sMat);
-  sphere.position.set(gx, gy, gz);
-  scene.add(sphere);
-
-  // 수직 라인 (표면 → 아래)
-  const linePts = [new THREE.Vector3(gx, gy, gz), new THREE.Vector3(gx, gy, gz - 0.3)];
-  const lineGeo = new THREE.BufferGeometry().setFromPoints(linePts);
-  const lineMat = new THREE.LineBasicMaterial({{ color: 0xff6666 }});
-  scene.add(new THREE.Line(lineGeo, lineMat));
+function resize() {{
+  const wrap = document.getElementById('wrap');
+  W = wrap.clientWidth  || 640;
+  H = Math.round(W * 0.65);
+  canvas.width  = W;
+  canvas.height = H;
+  draw();
 }}
+window.addEventListener('resize', resize);
 
-// ── Orbit controls (수동 구현) ───────────────────────────
-let isDragging = false, isRight = false;
-let prevX = 0, prevY = 0;
-let theta = 0.5, phi = 0.8, radius = 3;
+// ── Camera state ──────────────────────────────────────
+let rotX = 0.35, rotY = -0.5, zoom = 1.0;
 let panX = 0, panY = 0;
+let wireMode = false;
 
-function updateCamera() {{
-  camera.position.x = panX + radius * Math.sin(phi) * Math.sin(theta);
-  camera.position.y = panY + radius * Math.cos(phi);
-  camera.position.z = radius * Math.sin(phi) * Math.cos(theta);
-  camera.lookAt(panX, panY, 0);
+function resetView() {{
+  rotX = 0.35; rotY = -0.5; zoom = 1.0; panX = 0; panY = 0;
+  draw();
 }}
-updateCamera();
+function toggleWire() {{
+  wireMode = !wireMode; draw();
+}}
 
-renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
-renderer.domElement.addEventListener('mousedown', e => {{
-  isDragging = true;
-  isRight = e.button === 2;
-  prevX = e.clientX; prevY = e.clientY;
-}});
-window.addEventListener('mouseup', () => isDragging = false);
-window.addEventListener('mousemove', e => {{
-  if (!isDragging) return;
-  const dx = e.clientX - prevX, dy = e.clientY - prevY;
-  prevX = e.clientX; prevY = e.clientY;
-  if (isRight) {{
-    panX -= dx * 0.005; panY += dy * 0.005;
-  }} else {{
-    theta -= dx * 0.01;
-    phi = Math.max(0.05, Math.min(Math.PI - 0.05, phi - dy * 0.01));
+// ── 3D → 2D projection ────────────────────────────────
+function project(x, y, z) {{
+  // Rotate Y
+  let x1 =  x * Math.cos(rotY) + z * Math.sin(rotY);
+  let z1 = -x * Math.sin(rotY) + z * Math.cos(rotY);
+  // Rotate X
+  let y2 =  y * Math.cos(rotX) - z1 * Math.sin(rotX);
+  let z2 =  y * Math.sin(rotX) + z1 * Math.cos(rotX);
+  // Perspective
+  const fov = 2.8 * zoom;
+  const d = 3.5 + z2;
+  if (d < 0.01) return null;
+  const sx = W/2 + panX + (x1 * fov / d) * W * 0.42;
+  const sy = H/2 + panY - (y2 * fov / d) * W * 0.42;
+  return [sx, sy];
+}}
+
+// ── Draw ──────────────────────────────────────────────
+function draw() {{
+  ctx.clearRect(0, 0, W, H);
+
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0f172a');
+  grad.addColorStop(1, '#1e293b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid (simple)
+  ctx.strokeStyle = 'rgba(55,65,81,0.6)';
+  ctx.lineWidth = 0.5;
+  for (let g = -4; g <= 4; g++) {{
+    const a = project(g * 0.25, -1, -1);
+    const b = project(g * 0.25, -1,  1);
+    const c = project(-1, -1, g * 0.25);
+    const d_ = project( 1, -1, g * 0.25);
+    if (a && b) {{ ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); }}
+    if (c && d_) {{ ctx.beginPath(); ctx.moveTo(c[0],c[1]); ctx.lineTo(d_[0],d_[1]); ctx.stroke(); }}
   }}
-  updateCamera();
-}});
-renderer.domElement.addEventListener('wheel', e => {{
-  radius = Math.max(0.5, Math.min(20, radius + e.deltaY * 0.005));
-  updateCamera();
-}});
-window.addEventListener('resize', () => {{
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}});
 
-// ── Animate ──────────────────────────────────────────────
-function animate() {{
-  requestAnimationFrame(animate);
-  renderer.render(scene, camera);
+  // Triangles
+  for (let i = 0; i < N_TRIS; i++) {{
+    const t = TRIS[i];
+    const p0 = project(t[0], t[1], t[2]);
+    const p1 = project(t[3], t[4], t[5]);
+    const p2 = project(t[6], t[7], t[8]);
+    if (!p0 || !p1 || !p2) continue;
+
+    const b = t[9];  // brightness
+    if (wireMode) {{
+      ctx.strokeStyle = `rgba(126,200,227,${{0.3 + b * 0.4}})`;
+      ctx.lineWidth = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+      ctx.lineTo(p2[0], p2[1]);
+      ctx.closePath();
+      ctx.stroke();
+    }} else {{
+      // Face fill — steel blue tinted by brightness
+      const r = Math.round(40  + b * 90);
+      const g = Math.round(90  + b * 110);
+      const bl= Math.round(130 + b * 97);
+      ctx.fillStyle   = `rgba(${{r}},${{g}},${{bl}},0.88)`;
+      ctx.strokeStyle = `rgba(${{r}},${{g}},${{bl}},0.15)`;
+      ctx.lineWidth   = 0.3;
+      ctx.beginPath();
+      ctx.moveTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+      ctx.lineTo(p2[0], p2[1]);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }}
+  }}
+
+  // Gate marker
+  if (HAS_GATE) {{
+    const gp = project(GATE[0], GATE[1], GATE[2]);
+    if (gp) {{
+      // Glow ring
+      ctx.beginPath();
+      ctx.arc(gp[0], gp[1], 12, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,68,68,0.18)';
+      ctx.fill();
+      // Dot
+      ctx.beginPath();
+      ctx.arc(gp[0], gp[1], 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff4444';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Label
+      ctx.fillStyle   = '#ff8888';
+      ctx.font        = 'bold 11px monospace';
+      ctx.fillText('Gate', gp[0] + 10, gp[1] - 6);
+    }}
+  }}
+
+  // Axes (X=red, Y=green, Z=blue)
+  const axO = project(0,0,0);
+  const axX = project(0.15,0,0);
+  const axY = project(0,0.15,0);
+  const axZ = project(0,0,0.15);
+  if (axO && axX) {{ drawAxis(axO, axX, '#ef4444', 'X'); }}
+  if (axO && axY) {{ drawAxis(axO, axY, '#22c55e', 'Y'); }}
+  if (axO && axZ) {{ drawAxis(axO, axZ, '#3b82f6', 'Z'); }}
 }}
-animate();
+
+function drawAxis(o, a, color, label) {{
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(o[0], o[1]);
+  ctx.lineTo(a[0], a[1]);
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.font = 'bold 10px monospace';
+  ctx.fillText(label, a[0] + 2, a[1] - 2);
+}}
+
+// ── Mouse / Touch controls ─────────────────────────────
+let dragging = false, lastX = 0, lastY = 0, shiftDown = false;
+
+canvas.addEventListener('mousedown', e => {{
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  shiftDown = e.shiftKey;
+}});
+window.addEventListener('mouseup', () => dragging = false);
+window.addEventListener('mousemove', e => {{
+  if (!dragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  if (e.shiftKey) {{
+    panX += dx; panY += dy;
+  }} else {{
+    rotY += dx * 0.012;
+    rotX += dy * 0.012;
+    rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+  }}
+  draw();
+}});
+canvas.addEventListener('wheel', e => {{
+  e.preventDefault();
+  zoom *= (e.deltaY > 0) ? 0.92 : 1.09;
+  zoom = Math.max(0.2, Math.min(8, zoom));
+  draw();
+}}, {{ passive: false }});
+
+// Touch
+let t0x=0, t0y=0, pinchD0=0;
+canvas.addEventListener('touchstart', e => {{
+  if (e.touches.length === 1) {{
+    t0x = e.touches[0].clientX;
+    t0y = e.touches[0].clientY;
+  }} else if (e.touches.length === 2) {{
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    pinchD0 = Math.sqrt(dx*dx + dy*dy);
+  }}
+  e.preventDefault();
+}}, {{passive:false}});
+canvas.addEventListener('touchmove', e => {{
+  if (e.touches.length === 1) {{
+    rotY += (e.touches[0].clientX - t0x) * 0.012;
+    rotX += (e.touches[0].clientY - t0y) * 0.012;
+    t0x = e.touches[0].clientX;
+    t0y = e.touches[0].clientY;
+  }} else if (e.touches.length === 2) {{
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const d  = Math.sqrt(dx*dx + dy*dy);
+    zoom *= d / pinchD0;
+    zoom = Math.max(0.2, Math.min(8, zoom));
+    pinchD0 = d;
+  }}
+  draw();
+  e.preventDefault();
+}}, {{passive:false}});
+
+resize();
 </script>
 </body>
-</html>
-"""
+</html>"""
         return html
     except Exception as e:
         st.error(f"3D 시각화 오류: {e}")
@@ -658,9 +793,8 @@ with tab1:
                     except Exception as e:
                         st.error(f"기본 파일 로드 오류: {e}")
         
-        # 업로드된 파일 처리
+        # 업로드된 파일 처리 (파일이 바뀔 때만 재로드)
         if uploaded_file:
-            # 파일이 바뀔 때만 다시 로드 (매 rerun마다 재로드 방지)
             file_id = uploaded_file.file_id if hasattr(uploaded_file, 'file_id') else uploaded_file.name
             if st.session_state.get("loaded_file_id") != file_id:
                 st.session_state.mesh = load_stl_file(uploaded_file)
@@ -668,70 +802,71 @@ with tab1:
                 st.session_state.gate_suggestions = []
                 st.session_state.gate_ai_advice = ""
 
-            if st.session_state.mesh:
-                # 메시 정보
-                mesh = st.session_state.mesh
-                bounds = mesh.bounds
-                st.session_state.mesh_bounds = bounds
-                
-                col_info1, col_info2, col_info3 = st.columns(3)
-                with col_info1:
-                    st.metric("Volume", f"{abs(mesh.volume):.1f} mm³")
-                with col_info2:
-                    dims = bounds[1] - bounds[0]
-                    st.metric("Size (X,Y,Z)", f"{dims[0]:.1f}, {dims[1]:.1f}, {dims[2]:.1f} mm")
-                with col_info3:
-                    st.metric("Faces", f"{len(mesh.faces)}")
-                
-                # 게이트 위치 추천
-                st.subheader("2️⃣ Gate Position")
-                
-                if st.button("🎯 게이트 위치 추천", use_container_width=True):
-                    with st.spinner("게이트 위치 분석 중..."):
-                        suggestions = suggest_gate_positions(mesh)
-                        st.session_state.gate_suggestions = suggestions
-                        
-                        # AI 조언
-                        ai_advice = get_ai_gate_advice(mesh, st.session_state.material)
-                        if ai_advice:
-                            st.session_state.gate_ai_advice = ai_advice
-                
-                # 추천된 게이트 위치 표시
-                if st.session_state.gate_suggestions:
-                    st.markdown("**추천 게이트 위치:**")
-                    for i, sugg in enumerate(st.session_state.gate_suggestions):
-                        col_btn, col_info = st.columns([1, 3])
-                        with col_btn:
-                            if st.button(sugg["label"], key=f"gate_{i}", use_container_width=True):
-                                pos = sugg["position"]
-                                st.session_state.gate_x = float(pos[0])
-                                st.session_state.gate_y = float(pos[1])
-                                st.session_state.gate_z = float(pos[2])
-                        with col_info:
-                            st.caption(f"📍 {sugg['reason']}")
-                
-                # AI 조언
-                if st.session_state.gate_ai_advice:
-                    st.info(f"🤖 **AI 조언:** {st.session_state.gate_ai_advice}")
-                
-                # 수동 게이트 설정
-                st.markdown("**또는 수동으로 설정:**")
-                col_gx, col_gy, col_gz = st.columns(3)
-                with col_gx:
-                    st.session_state.gate_x = st.number_input("Gate X (mm)", value=st.session_state.gate_x)
-                with col_gy:
-                    st.session_state.gate_y = st.number_input("Gate Y (mm)", value=st.session_state.gate_y)
-                with col_gz:
-                    st.session_state.gate_z = st.number_input("Gate Z (mm)", value=st.session_state.gate_z)
-                
-                # 3D 시각화
-                st.subheader("3D Visualization")
-                html_3d = visualize_mesh_with_gate(
-                    mesh,
-                    [st.session_state.gate_x, st.session_state.gate_y, st.session_state.gate_z]
-                )
-                if html_3d:
-                    components.html(html_3d, height=520, scrolling=False)
+        # ── 메시가 session_state에 있으면 무조건 표시 ──────────────
+        if st.session_state.mesh:
+            mesh = st.session_state.mesh
+            bounds = mesh.bounds
+            st.session_state.mesh_bounds = bounds
+
+            # 메시 정보
+            col_info1, col_info2, col_info3 = st.columns(3)
+            with col_info1:
+                st.metric("Volume", f"{abs(mesh.volume):.1f} mm³")
+            with col_info2:
+                dims = bounds[1] - bounds[0]
+                st.metric("Size (X,Y,Z)", f"{dims[0]:.1f}, {dims[1]:.1f}, {dims[2]:.1f} mm")
+            with col_info3:
+                st.metric("Faces", f"{len(mesh.faces)}")
+
+            # 게이트 위치 추천
+            st.subheader("2️⃣ Gate Position")
+
+            if st.button("🎯 게이트 위치 추천", use_container_width=True):
+                with st.spinner("게이트 위치 분석 중..."):
+                    suggestions = suggest_gate_positions(mesh)
+                    st.session_state.gate_suggestions = suggestions
+                    ai_advice = get_ai_gate_advice(mesh, st.session_state.material)
+                    if ai_advice:
+                        st.session_state.gate_ai_advice = ai_advice
+
+            # 추천된 게이트 위치 표시
+            if st.session_state.gate_suggestions:
+                st.markdown("**추천 게이트 위치:**")
+                for i, sugg in enumerate(st.session_state.gate_suggestions):
+                    col_btn, col_info = st.columns([1, 3])
+                    with col_btn:
+                        if st.button(sugg["label"], key=f"gate_{i}", use_container_width=True):
+                            pos = sugg["position"]
+                            st.session_state.gate_x = float(pos[0])
+                            st.session_state.gate_y = float(pos[1])
+                            st.session_state.gate_z = float(pos[2])
+                    with col_info:
+                        st.caption(f"📍 {sugg['reason']}")
+
+            # AI 조언
+            if st.session_state.gate_ai_advice:
+                st.info(f"🤖 **AI 조언:** {st.session_state.gate_ai_advice}")
+
+            # 수동 게이트 설정
+            st.markdown("**또는 수동으로 설정:**")
+            col_gx, col_gy, col_gz = st.columns(3)
+            with col_gx:
+                st.session_state.gate_x = st.number_input("Gate X (mm)", value=st.session_state.gate_x)
+            with col_gy:
+                st.session_state.gate_y = st.number_input("Gate Y (mm)", value=st.session_state.gate_y)
+            with col_gz:
+                st.session_state.gate_z = st.number_input("Gate Z (mm)", value=st.session_state.gate_z)
+
+            # ── 3D 시각화 ─────────────────────────────────────────
+            st.subheader("3D Visualization")
+            html_3d = visualize_mesh_with_gate(
+                mesh,
+                [st.session_state.gate_x, st.session_state.gate_y, st.session_state.gate_z]
+            )
+            if html_3d:
+                components.html(html_3d, height=520, scrolling=False)
+        else:
+            st.info("💡 STL 파일을 업로드하면 3D 뷰어가 표시됩니다.")
     
     # ─── 오른쪽: 시뮬레이션 파라미터 ───
     with col2:
