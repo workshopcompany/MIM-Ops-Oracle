@@ -74,6 +74,60 @@ def parse_args():
     return args
 
 
+# ════════════════════════════════════════════════════
+# ★ RAM 예측 함수 (Issue #2)
+# ════════════════════════════════════════════════════
+
+def estimate_memory_gb(mesh, res_mm):
+    """
+    주어진 해상도에서 예상 RAM 사용량을 GB 단위로 반환.
+    복셀 수 × bytes_per_voxel 기반 추정.
+    """
+    bounds = mesh.bounds           # [[xmin,ymin,zmin],[xmax,ymax,zmax]]
+    bb = bounds[1] - bounds[0]     # 바운딩 박스 크기
+    bb = np.maximum(bb, 1e-6)
+
+    # 그리드 전체 복셀 수 (빈 공간 포함)
+    grid_nx = int(np.ceil(bb[0] / res_mm))
+    grid_ny = int(np.ceil(bb[1] / res_mm))
+    grid_nz = int(np.ceil(bb[2] / res_mm))
+    grid_total = grid_nx * grid_ny * grid_nz
+
+    # fill ratio: 파트 부피 / 바운딩박스 부피
+    try:
+        vol = abs(float(mesh.volume))
+        bb_vol = float(bb[0] * bb[1] * bb[2])
+        fill_ratio = min(vol / bb_vol, 1.0) if bb_vol > 0 else 0.3
+    except Exception:
+        fill_ratio = 0.3
+
+    est_voxels = max(int(grid_total * fill_ratio), 1)
+
+    # 메모리 항목별 추정
+    # - all_coords float32: 12 bytes/voxel
+    # - norm_weights float32: 4 bytes/voxel
+    # - cKDTree 내부 구조: ~60 bytes/voxel
+    # - Dijkstra 힙/거리 배열: ~40 bytes/voxel
+    # - 임시 배열 오버헤드: 2× 여유
+    bytes_per_voxel = (12 + 4 + 60 + 40) * 2  # ~232 bytes
+    est_ram_gb = (est_voxels * bytes_per_voxel) / (1024 ** 3)
+
+    return est_voxels, est_ram_gb
+
+
+def recommend_resolution(mesh, max_ram_gb=16.0):
+    """
+    사용 가능한 RAM 한계 내에서 권장 해상도를 반환.
+    안전 마진 75% 적용.
+    """
+    safe_ram = max_ram_gb * 0.75
+    for res in [2.0, 1.5, 1.0, 0.8, 0.6, 0.5, 0.4, 0.3]:
+        _, ram = estimate_memory_gb(mesh, res)
+        if ram <= safe_ram:
+            return res, ram
+    return 2.0, None
+
+
 def compute_dijkstra_weights(all_coords, start_idx, res):
     """
     Dijkstra BFS on voxel grid.
@@ -83,17 +137,28 @@ def compute_dijkstra_weights(all_coords, start_idx, res):
     from scipy.spatial import cKDTree
 
     total = len(all_coords)
-    weights = np.full(total, np.inf)
+    weights = np.full(total, np.inf, dtype=np.float32)
     weights[start_idx] = 0.0
     pq = [(0.0, start_idx)]
     neighbor_radius = res * 1.85  # covers diagonal voxel neighbors
 
     tree = cKDTree(all_coords)
 
+    visited_count = 0
+    report_interval = max(1, total // 20)  # 5% 단위 보고
+
     while pq:
         d, idx = heapq.heappop(pq)
         if d > weights[idx]:
             continue
+        visited_count += 1
+
+        # Dijkstra 진행률 보고 (25% ~ 50% 구간)
+        if visited_count % report_interval == 0:
+            pct = 25 + int((visited_count / total) * 25)
+            pct = min(pct, 49)
+            print(f"PROGRESS:{pct}")
+
         neighbor_indices = tree.query_ball_point(all_coords[idx], neighbor_radius)
         for n_idx in neighbor_indices:
             if n_idx == idx:
@@ -247,6 +312,7 @@ def main():
 
     print(f"[Solver] STL: {args.stl_path}")
     print(f"[Solver] Gate: ({args.gate_x}, {args.gate_y}, {args.gate_z}), dia={args.gate_dia}mm")
+    print("PROGRESS:2")
 
     # 1. Load & voxelise STL
     print("[Solver] Loading STL mesh...")
@@ -256,19 +322,41 @@ def main():
             [g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
         )
     print(f"[Solver] Mesh loaded: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
-    
+    print("PROGRESS:5")
+
+    # ── RAM 예측 및 해상도 권장 (Issue #2) ─────────────────────────
     res = args.mesh_res_mm
+    est_voxels_16, est_ram_16 = estimate_memory_gb(mesh, res)
+    _, rec_res_16  = recommend_resolution(mesh, max_ram_gb=16.0)
+    _, rec_res_24  = recommend_resolution(mesh, max_ram_gb=24.0)
+    rec_16, _ = recommend_resolution(mesh, max_ram_gb=16.0)
+    rec_24, _ = recommend_resolution(mesh, max_ram_gb=24.0)
+
+    print(f"[Solver] ═══ RAM 예측 (해상도 {res}mm) ═══")
+    print(f"[Solver]   예상 복셀 수  : {est_voxels_16:,}")
+    print(f"[Solver]   예상 RAM 사용 : {est_ram_16:.2f} GB")
+    print(f"[Solver]   권장 해상도 (16GB RAM) : {rec_16:.1f} mm")
+    print(f"[Solver]   권장 해상도 (24GB RAM) : {rec_24:.1f} mm")
+
+    # RAM 초과 경고
+    if est_ram_16 > 12.0:
+        print(f"[Solver] ⚠️  경고: {res}mm 해상도에서 예상 RAM {est_ram_16:.1f}GB → "
+              f"부족 시 {rec_16:.1f}mm 권장")
+
     print(f"[Solver] Starting voxelization at resolution {res}mm...")
+    print("PROGRESS:8")
     
     try:
         # 안전한 voxelization — pitch 파라미터로 더 간단하게
         voxel_grid = mesh.voxelized(pitch=res)
         print(f"[Solver] Voxelization completed")
+        print("PROGRESS:12")
         
         # fill() — 내부 볼륨까지 채움 (없으면 표면 shell만 복셀화됨)
         print("[Solver] Filling voxel grid...")
         voxel_grid = voxel_grid.fill()
         print("[Solver] Fill completed")
+        print("PROGRESS:16")
         
         raw_coords = voxel_grid.points
         print(f"[Solver] 기본 Voxels: {len(raw_coords)} at res={res}mm (solid fill)")
@@ -278,24 +366,44 @@ def main():
         traceback.print_exc()
         return
 
-    # ── [핵심 추가] STL 경계면 밖으로 삐져나온 격자 중심점 제거 (In-Out Check) ──
-    print("[Solver] ✂️ STL 경계 기반 정밀 필터링 진행 중...")
+    # ── [메모리 최적화 Issue #1] mesh.contains() 청크 단위 처리 ──────────
+    # 한 번에 전체 처리 시 대형 모델에서 메모리 스파이크 발생 → 50K 청크로 분할
+    print("[Solver] ✂️ STL 경계 기반 정밀 필터링 진행 중 (청크 처리)...")
+    CHUNK_SIZE = 50_000
     try:
-        # mesh.contains(points)는 포인트가 메쉬 내부에 있는지 판별(True/False 반환)
-        inside_mask = mesh.contains(raw_coords)
+        inside_chunks = []
+        total_raw = len(raw_coords)
+        for i in range(0, total_raw, CHUNK_SIZE):
+            chunk = raw_coords[i : i + CHUNK_SIZE]
+            inside_chunks.append(mesh.contains(chunk))
+            # 필터링 진행률 보고 (16% ~ 24% 구간)
+            pct = 16 + int(((i + CHUNK_SIZE) / total_raw) * 8)
+            pct = min(pct, 24)
+            print(f"PROGRESS:{pct}")
+        inside_mask = np.concatenate(inside_chunks)
+        del inside_chunks  # 메모리 즉시 해제
+
         filtered_coords = raw_coords[inside_mask]
-        
+        del inside_mask   # 메모리 즉시 해제
+
         # 안전장치: 너무 얇아서 데이터가 다 날아가는 경우를 대비해 최소 10% 유지 확인
-        if len(filtered_coords) > max(10, len(raw_coords) * 0.1):
-            all_coords = filtered_coords
-            print(f"[Solver] ✂️ 필터링 완료: 외곽 격자 제거됨 ({len(raw_coords)} -> {len(all_coords)})")
+        if len(filtered_coords) > max(10, total_raw * 0.1):
+            # [메모리 최적화] float64 → float32 로 좌표 저장 (RAM 50% 절약)
+            all_coords = filtered_coords.astype(np.float32)
+            print(f"[Solver] ✂️ 필터링 완료: 외곽 격자 제거됨 ({total_raw} -> {len(all_coords)})")
         else:
             print(f"[Solver] ⚠️ 필터링 후 데이터가 너무 적어 원본을 유지합니다.")
-            all_coords = raw_coords
+            all_coords = raw_coords.astype(np.float32)
+
+        del raw_coords    # 원본 좌표 메모리 해제
+        del filtered_coords
+
     except Exception as e:
         print(f"[Solver] ⚠️ 경계 필터링 실패 (원본 유지): {e}")
-        all_coords = raw_coords
+        all_coords = raw_coords.astype(np.float32)
+        del raw_coords
     # ────────────────────────────────────────────────────────────
+    print("PROGRESS:25")
 
     total_voxels = len(all_coords)
 
@@ -307,14 +415,11 @@ def main():
     print(f"[Solver] Volume: {vol_mm3:.1f} mm³ | Screw ø{args.screw_dia}mm | Flow: {flow_rate:.0f} mm³/s | Theo fill: {theo_fill_time:.3f}s")
 
     # 3. Geometric Dijkstra — purely visual ordering
-    gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z])
+    gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z], dtype=np.float32)
 
-    # 게이트가 (0,0,0) 기본값 그대로이거나 voxel 범위 밖이면
-    # → 파트 bounding box 최솟값 면의 centroid로 자동 보정
     bb_min = all_coords.min(axis=0)
     bb_max = all_coords.max(axis=0)
     gate_in_range = np.all(gate_pos >= bb_min - res) and np.all(gate_pos <= bb_max + res)
-    # np.allclose 제거: 원점 근처의 유효 게이트(Bottom-Center 등)를 잘못 보정하던 버그 수정
     if not gate_in_range:
         z_min_mask = all_coords[:, 2] < bb_min[2] + res * 2
         gate_pos = all_coords[z_min_mask].mean(axis=0)
@@ -326,8 +431,10 @@ def main():
     start_idx = int(np.argmin(dists_to_gate))
     print(f"[Solver] Nearest gate voxel: idx={start_idx}")
     print("[Solver] Running Dijkstra BFS...")
+    print("PROGRESS:26")
     norm_weights = compute_dijkstra_weights(all_coords, start_idx, res)
     print("[Solver] Dijkstra complete.")
+    print("PROGRESS:50")
 
     # 4. Animation frames
     num_frames = args.num_frames
@@ -351,6 +458,9 @@ def main():
             fill_pct=fill_pct,
             out_dir=frames_dir,
         )
+        # 프레임 진행률: 50% ~ 95% 구간
+        frame_pct = 50 + int(((f + 1) / num_frames) * 45)
+        print(f"PROGRESS:{frame_pct}")
         print(f"  Frame {f+1}/{num_frames} | Fill: {fill_pct:.1f}% | t={phys_label}")
 
     # 5. Save results
@@ -368,19 +478,31 @@ def main():
         "Mesh Res (mm)":        res,
         "Solver Time (s)":      round(elapsed, 2),
         "Status":               "Success",
+        "Est RAM (GB)":         round(est_ram_16, 3),
+        "Rec Res 16GB (mm)":    rec_16,
+        "Rec Res 24GB (mm)":    rec_24,
         "Note": (
             "Frames are geometry-driven (Dijkstra). "
             "Physical time is a proportional label — decoupled from animation speed."
         ),
+        # [메모리 최적화 Issue #1]
+        # voxel_coords / flow_weights 는 results.json 에서 제거.
+        # → 대신 voxel_data.npz 로 별도 저장하여 JSON 파싱 메모리 절약.
+        "voxel_data_file": "voxel_data.npz",
     }
-
-    # 복셀 좌표 + Dijkstra 가중치를 results.json에 통합 저장
-    results["voxel_coords"]  = all_coords.round(4).tolist()   # [[x,y,z], ...]
-    results["flow_weights"]  = norm_weights.round(6).tolist() # [0.0~1.0, ...]
 
     with open("results.json", "w") as fh:
         json.dump(results, fh, indent=4)
-    print(f"[Solver] ✅ results.json 저장 완료 (voxel_coords {total_voxels}개 포함)")
+    print(f"[Solver] ✅ results.json 저장 완료 (복셀 데이터는 voxel_data.npz 참조)")
+
+    # [메모리 최적화] 복셀 좌표 + 가중치 → 압축 numpy 파일로 분리 저장
+    # float32 사용으로 float64 대비 파일 크기 / 로딩 메모리 50% 절약
+    np.savez_compressed(
+        "voxel_data.npz",
+        coords=all_coords.astype(np.float32),
+        weights=norm_weights.astype(np.float32),
+    )
+    print(f"[Solver] ✅ voxel_data.npz 저장 완료 ({total_voxels}개 복셀, float32)")
 
     with open("results.txt", "w") as fh:
         for k, v in results.items():
@@ -390,6 +512,7 @@ def main():
     _export_vtk(all_coords, norm_weights, res)
 
     print(f"[Solver] Done in {elapsed:.1f}s. {num_frames} frames saved to {frames_dir}/")
+    print("PROGRESS:100")
 
 
 if __name__ == "__main__":
