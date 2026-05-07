@@ -335,6 +335,8 @@ def main():
             fill_pct=fill_pct,
             out_dir=frames_dir,
         )
+        progress_pct = int((f + 1) / num_frames * 100)
+        print(f"PROGRESS: {progress_pct}%")
         print(f"  Frame {f+1}/{num_frames} | Fill: {fill_pct:.1f}% | t={phys_label}")
 
     # 5. Save results
