@@ -111,7 +111,8 @@ init_session_state()
 def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
     """
     주어진 해상도에서 예상 RAM(GB)과 복셀 수를 반환.
-    solver.py 의 estimate_memory_gb() 와 동일한 로직.
+    solver.py 의 estimate_memory_gb() 와 동일한 보정 계수 사용.
+    순수 배열(196 bytes) × 3배 Python 런타임 오버헤드 = ~588 bytes/voxel.
     """
     bounds = mesh.bounds
     bb = bounds[1] - bounds[0]
@@ -129,7 +130,7 @@ def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
         fill_ratio = 0.3
 
     est_voxels = max(int(grid_total * fill_ratio), 1)
-    bytes_per_voxel = (12 + 4 + 60 + 40) * 2  # ~232 bytes (float32 coords, weights, cKDTree, Dijkstra)
+    bytes_per_voxel = (12 + 4 + 100 + 80) * 3   # ~588 bytes (보수적 추정)
     est_ram_gb_val = (est_voxels * bytes_per_voxel) / (1024 ** 3)
     return est_voxels, est_ram_gb_val
 
@@ -137,7 +138,6 @@ def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
 def render_ram_advisor(mesh):
     """
     STL 로드 후 현재 해상도의 예상 RAM 및 권장 해상도 테이블을 표시.
-    col2의 해상도 슬라이더 위에 표시.
     """
     current_res = st.session_state.get("mesh_res_mm", 1.0)
     est_v, est_ram = estimate_ram_gb(mesh, current_res)
@@ -154,7 +154,7 @@ def render_ram_advisor(mesh):
 
     # 해상도별 테이블
     rows = []
-    for res_test in [2.0, 1.5, 1.0, 0.8, 0.5, 0.3]:
+    for res_test in [0.3, 0.5, 0.8, 1.0, 1.5, 2.0]:
         _, ram_test = estimate_ram_gb(mesh, res_test)
         if ram_test <= 12:
             status = "✅ 16GB 이하"
@@ -168,9 +168,9 @@ def render_ram_advisor(mesh):
 
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    # 권장 해상도 자동 제안
+    # [버그 수정] 권장 해상도: 정밀한 쪽(0.3mm)부터 검사 → RAM 안에 드는 가장 정밀한 값
     rec_16, rec_24 = None, None
-    for res_test in [2.0, 1.5, 1.0, 0.8, 0.5, 0.4, 0.3]:
+    for res_test in [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0]:
         _, r = estimate_ram_gb(mesh, res_test)
         if r <= 16 * 0.75 and rec_16 is None:
             rec_16 = res_test
