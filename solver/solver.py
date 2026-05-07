@@ -3,8 +3,8 @@ import os
 import json
 import numpy as np
 import trimesh
-import heapq
 import time
+from collections import deque
 
 # ── matplotlib (헤드리스 환경 대응) ──────────────────────────
 import matplotlib
@@ -80,37 +80,35 @@ def parse_args():
 
 def estimate_memory_gb(mesh, res_mm):
     """
-    주어진 해상도에서 예상 RAM 사용량을 GB 단위로 반환.
-    복셀 수 × bytes_per_voxel 기반 추정.
+    주어진 해상도에서 예상 복셀 수와 RAM 사용량(GB)을 반환.
+
+    ★ 핵심 설계 원칙:
+      fill_ratio(부피/BB)는 얇은 판형 파트에서 실제 복셀 수를 크게 과소 추정.
+      예: 84x50x5mm 판 -> fill_ratio~0.02 -> 실제의 1/50 수준으로 예측.
+      fill_ratio 를 제거하고 바운딩박스 전체 복셀 수(최악 케이스)로 보수적 추정.
+
+    ★ bytes_per_voxel 실측 근거 — BFS 방식 기준 (~210 bytes):
+      - all_coords float32  : 12 bytes
+      - dist float32        :  4 bytes
+      - visited bool array  :  1 byte
+      - idx_map dict entry  : ~100 bytes  (Python dict 오버헤드)
+      - grid_idx int32      : 12 bytes
+      - deque entry         :  8 bytes
+      - Python 런타임 x1.5
+      합계: (12+4+1+100+12+8) x 1.5 = 210 bytes/voxel
     """
-    bounds = mesh.bounds           # [[xmin,ymin,zmin],[xmax,ymax,zmax]]
-    bb = bounds[1] - bounds[0]     # 바운딩 박스 크기
+    bounds = mesh.bounds
+    bb = bounds[1] - bounds[0]
     bb = np.maximum(bb, 1e-6)
 
-    # 그리드 전체 복셀 수 (빈 공간 포함)
     grid_nx = int(np.ceil(bb[0] / res_mm))
     grid_ny = int(np.ceil(bb[1] / res_mm))
     grid_nz = int(np.ceil(bb[2] / res_mm))
-    grid_total = grid_nx * grid_ny * grid_nz
+    # fill_ratio 제거: BB 전체 복셀 수로 보수적 추정 (OOM 방지)
+    est_voxels = max(int(grid_nx) * int(grid_ny) * int(grid_nz), 1)
 
-    # fill ratio: 파트 부피 / 바운딩박스 부피
-    try:
-        vol = abs(float(mesh.volume))
-        bb_vol = float(bb[0] * bb[1] * bb[2])
-        fill_ratio = min(vol / bb_vol, 1.0) if bb_vol > 0 else 0.3
-    except Exception:
-        fill_ratio = 0.3
-
-    est_voxels = max(int(grid_total * fill_ratio), 1)
-
-    # 메모리 항목별 추정 (float32 최적화 4종 적용 후 실측 기반)
-    # - all_coords float32      :  12 bytes/voxel  (xyz × 4B)
-    # - norm_weights float32    :   4 bytes/voxel
-    # - cKDTree 노드 구조       :  32 bytes/voxel  (float32 트리, 최적화 후)
-    # - Dijkstra 힙+dist 배열  :  20 bytes/voxel  (float32 dist + heap 항목)
-    # - chunk 처리 임시 오버헤드: ×1.5 여유 (×2 → ×1.5 로 완화, 청크 분할로 스파이크 억제)
-    bytes_per_voxel = int((12 + 4 + 32 + 20) * 1.5)  # ~102 bytes (실측 보정값)
-    est_ram_gb = (est_voxels * bytes_per_voxel) / (1024 ** 3)
+    BYTES_PER_VOXEL = 210  # BFS 기준 실측값
+    est_ram_gb = (est_voxels * BYTES_PER_VOXEL) / (1024 ** 3)
 
     return est_voxels, est_ram_gb
 
@@ -130,62 +128,82 @@ def recommend_resolution(mesh, max_ram_gb=16.0):
 
 def compute_dijkstra_weights(all_coords, start_idx, res):
     """
-    Dijkstra BFS on voxel grid.
-    Returns normalized weights [0.0 ~ 1.0] where 0 = gate, 1 = farthest point.
-    Purely GEOMETRIC — no physical time involved.
+    복셀 그리드에서 게이트로부터의 기하학적 거리 기반 가중치 계산.
+    Returns normalized weights [0.0 ~ 1.0] (0=gate, 1=최원단점).
 
-    [메모리 최적화]
-    - cKDTree 는 루프 밖에서 단 1회 생성
-    - query_ball_point(전체 트리 순회) → query(k=27 고정 k-NN) 으로 교체
-      → 루프당 메모리 스파이크 제거, 3D 26-연결 이웃만 탐색
+    ★ 수정 내역:
+      기존 Dijkstra 구현에 visited 셋이 없어서 동일 노드를 무한 재처리 →
+      힙이 O(V²)으로 불어나 30분+ 무한루프 + OOM 발생.
+
+      복셀 그리드는 모든 엣지 가중치가 res(또는 res*sqrt(2), res*sqrt(3))로
+      이산적이므로, Dijkstra 대신 순수 BFS(FIFO queue)로 대체.
+      BFS: O(V+E), 힙 불필요, 메모리 O(V)로 고정.
     """
-    from scipy.spatial import cKDTree
+    from collections import deque
 
     total = len(all_coords)
-    weights = np.full(total, np.inf, dtype=np.float32)
-    weights[start_idx] = 0.0
-    pq = [(0.0, start_idx)]
 
-    # ── cKDTree: 루프 밖에서 1회만 생성 ──────────────────────────
-    tree = cKDTree(all_coords)
+    # 복셀 중심 좌표 → 정수 그리드 인덱스로 변환 (빠른 이웃 탐색)
+    # 좌표를 res 단위로 정규화 후 반올림
+    origin = all_coords.min(axis=0)
+    # 각 복셀의 그리드 인덱스 (int32)
+    grid_idx = np.round((all_coords - origin) / res).astype(np.int32)
 
-    # 대각선 복셀까지 포함하는 반경 (26-연결)
-    neighbor_radius = res * 1.85
+    # 그리드 인덱스 → 배열 인덱스 역매핑 dict 구축
+    idx_map = {}
+    for arr_i, (ix, iy, iz) in enumerate(grid_idx):
+        idx_map[(int(ix), int(iy), int(iz))] = arr_i
 
-    # k-NN 개수: 3D 격자에서 최대 26개 이웃 + 자기 자신
-    K_NEIGHBORS = 27
+    # 26-방향 이웃 오프셋 (3D)
+    OFFSETS = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if not (dx == 0 and dy == 0 and dz == 0)
+    ]  # 26개
 
-    visited_count = 0
+    # BFS 초기화
+    dist = np.full(total, np.inf, dtype=np.float32)
+    dist[start_idx] = 0.0
+    visited = np.zeros(total, dtype=bool)
+
+    queue = deque([start_idx])
+    visited[start_idx] = True
+
+    processed = 0
     report_interval = max(1, total // 20)
 
-    while pq:
-        d, idx = heapq.heappop(pq)
-        if d > weights[idx]:
-            continue
-        visited_count += 1
+    while queue:
+        idx = queue.popleft()
+        processed += 1
 
-        if visited_count % report_interval == 0:
-            pct = 25 + int((visited_count / total) * 25)
+        if processed % report_interval == 0:
+            pct = 25 + int((processed / total) * 25)
             pct = min(pct, 49)
             print(f"PROGRESS:{pct}")
 
-        # ── query_ball_point → query(k=K_NEIGHBORS) 으로 교체 ──
-        # k-NN 결과 중 neighbor_radius 초과분만 필터링
-        dists_knn, neighbor_indices = tree.query(
-            all_coords[idx], k=min(K_NEIGHBORS, total), workers=1
-        )
-        for dist, n_idx in zip(dists_knn, neighbor_indices):
-            if n_idx == idx or dist > neighbor_radius:
-                continue
-            new_d = d + float(dist)
-            if new_d < weights[n_idx]:
-                weights[n_idx] = new_d
-                heapq.heappush(pq, (new_d, n_idx))
+        ix, iy, iz = int(grid_idx[idx, 0]), int(grid_idx[idx, 1]), int(grid_idx[idx, 2])
 
-    finite_mask = weights != np.inf
-    max_w = float(np.max(weights[finite_mask])) if finite_mask.any() else 1.0
-    weights[~finite_mask] = max_w
-    return weights / max_w
+        for dx, dy, dz in OFFSETS:
+            key = (ix + dx, iy + dy, iz + dz)
+            n_idx = idx_map.get(key)
+            if n_idx is None or visited[n_idx]:
+                continue
+            # 엣지 거리: 면=res, 모서리=res*√2, 꼭짓점=res*√3
+            step = res * (abs(dx) + abs(dy) + abs(dz)) ** 0.5
+            new_d = dist[idx] + step
+            if new_d < dist[n_idx]:
+                dist[n_idx] = new_d
+            visited[n_idx] = True
+            queue.append(n_idx)
+
+    # 미도달 복셀(격리된 섬) 처리
+    finite_mask = np.isfinite(dist)
+    max_d = float(dist[finite_mask].max()) if finite_mask.any() else 1.0
+    dist[~finite_mask] = max_d
+
+    return dist / max_d
 
 
 def save_visual_frame(coords, norm_weights, threshold_ratio, frame_idx,
