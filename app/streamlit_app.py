@@ -105,6 +105,92 @@ def init_session_state():
 init_session_state()
 
 # ═══════════════════════════════════════════════════════════
+# ★ RAM 예측 / 해상도 추천 (Issue #2)
+# ═══════════════════════════════════════════════════════════
+
+def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
+    """
+    주어진 해상도에서 예상 RAM(GB)과 복셀 수를 반환.
+    solver.py 의 estimate_memory_gb() 와 동일한 로직.
+    """
+    bounds = mesh.bounds
+    bb = bounds[1] - bounds[0]
+    bb = np.maximum(bb, 1e-6)
+    grid_nx = int(np.ceil(bb[0] / res_mm))
+    grid_ny = int(np.ceil(bb[1] / res_mm))
+    grid_nz = int(np.ceil(bb[2] / res_mm))
+    grid_total = grid_nx * grid_ny * grid_nz
+
+    try:
+        vol = abs(float(mesh.volume))
+        bb_vol = float(bb[0] * bb[1] * bb[2])
+        fill_ratio = min(vol / bb_vol, 1.0) if bb_vol > 0 else 0.3
+    except Exception:
+        fill_ratio = 0.3
+
+    est_voxels = max(int(grid_total * fill_ratio), 1)
+    bytes_per_voxel = (12 + 4 + 60 + 40) * 2  # ~232 bytes (float32 coords, weights, cKDTree, Dijkstra)
+    est_ram_gb_val = (est_voxels * bytes_per_voxel) / (1024 ** 3)
+    return est_voxels, est_ram_gb_val
+
+
+def render_ram_advisor(mesh):
+    """
+    STL 로드 후 현재 해상도의 예상 RAM 및 권장 해상도 테이블을 표시.
+    col2의 해상도 슬라이더 위에 표시.
+    """
+    current_res = st.session_state.get("mesh_res_mm", 1.0)
+    est_v, est_ram = estimate_ram_gb(mesh, current_res)
+
+    # 색상 경고
+    if est_ram < 8:
+        ram_color = "🟢"
+    elif est_ram < 14:
+        ram_color = "🟡"
+    else:
+        ram_color = "🔴"
+
+    st.markdown(f"**{ram_color} 현재 해상도 {current_res:.1f}mm → 예상 RAM: `{est_ram:.1f} GB`  |  복셀 수: `{est_v:,}`**")
+
+    # 해상도별 테이블
+    rows = []
+    for res_test in [2.0, 1.5, 1.0, 0.8, 0.5, 0.3]:
+        _, ram_test = estimate_ram_gb(mesh, res_test)
+        if ram_test <= 12:
+            status = "✅ 16GB 이하"
+        elif ram_test <= 18:
+            status = "🟡 16~24GB"
+        elif ram_test <= 22:
+            status = "⚠️ 24GB 근접"
+        else:
+            status = "❌ 24GB 초과"
+        rows.append({"해상도 (mm)": res_test, "예상 RAM (GB)": f"{ram_test:.1f}", "상태": status})
+
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    # 권장 해상도 자동 제안
+    rec_16, rec_24 = None, None
+    for res_test in [2.0, 1.5, 1.0, 0.8, 0.5, 0.4, 0.3]:
+        _, r = estimate_ram_gb(mesh, res_test)
+        if r <= 16 * 0.75 and rec_16 is None:
+            rec_16 = res_test
+        if r <= 24 * 0.75 and rec_24 is None:
+            rec_24 = res_test
+
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        if rec_16:
+            if st.button(f"💡 16GB 권장값 적용: {rec_16:.1f}mm", use_container_width=True):
+                st.session_state.mesh_res_mm = float(rec_16)
+                st.rerun()
+    with col_r2:
+        if rec_24:
+            if st.button(f"💡 24GB 권장값 적용: {rec_24:.1f}mm", use_container_width=True):
+                st.session_state.mesh_res_mm = float(rec_24)
+                st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════
 # 재료 데이터베이스 함수들
 # ═══════════════════════════════════════════════════════════
 
@@ -818,6 +904,10 @@ with tab1:
             with col_info3:
                 st.metric("Faces", f"{len(mesh.faces)}")
 
+            # ── RAM 예측 (Issue #2) ──────────────────────────────────
+            with st.expander("💾 RAM 예측 및 해상도 추천", expanded=False):
+                render_ram_advisor(mesh)
+
             # 게이트 위치 추천
             st.subheader("2️⃣ Gate Position")
 
@@ -1040,23 +1130,55 @@ with tab3:
             
             if status:
                 st.session_state.sim_status = status.get("status", "unknown")
+                current_status = st.session_state.sim_status
                 
-                # 상태 표시
-                if st.session_state.sim_status == "completed":
-                    st.success(f"✅ 완료")
-                elif st.session_state.sim_status == "running":
-                    st.info(f"⏳ 실행 중... ({status.get('progress', 0)}%)")
-                elif st.session_state.sim_status == "queued":
+                # ── [Issue #3] 상태별 표시 개선 ───────────────────────────
+                if current_status == "completed":
+                    st.success("✅ 시뮬레이션 완료")
+
+                elif current_status == "running":
+                    progress_val = status.get("progress", 0)
+                    st.info(f"⏳ 실행 중... ({progress_val}%)")
+                    st.progress(progress_val / 100)
+                    # [Issue #3] running 상태에서 자동 새로고침 (5초 간격)
+                    st.caption("⏱ 5초마다 자동 갱신됩니다...")
+                    time.sleep(5)
+                    st.rerun()
+
+                elif current_status == "queued":
                     st.info("📋 대기 중...")
+                    # queued 상태도 자동 갱신
+                    time.sleep(3)
+                    st.rerun()
+
+                elif current_status in ("failed", "error", "timeout"):
+                    # [Issue #3] 오류 상태에서 오류 메시지를 명확하게 표시
+                    error_msg = status.get("error") or "알 수 없는 오류"
+                    st.error(f"❌ **시뮬레이션 실패** ({current_status})")
+                    st.error(f"오류 내용: {error_msg}")
+
+                    # 로그 전문 표시
+                    log_lines = status.get("log", [])
+                    if log_lines:
+                        with st.expander("📋 솔버 로그 (마지막 100줄)", expanded=True):
+                            st.code("\n".join(log_lines), language="text")
+
+                    # RAM 부족 가능성 안내
+                    if any(kw in error_msg for kw in ["MemoryError", "OOM", "Killed", "killed", "memory"]):
+                        st.warning(
+                            "💡 **RAM 부족 오류가 감지되었습니다.**\n\n"
+                            "Simulation 탭 → '💾 RAM 예측 및 해상도 추천'에서\n"
+                            "더 낮은 해상도(예: 1.0mm 또는 1.5mm)를 적용하고 다시 시도하세요."
+                        )
                 else:
-                    st.warning(f"⚠️ {st.session_state.sim_status}")
-                
+                    st.warning(f"⚠️ 상태: {current_status}")
+
                 # 상태 세부사항
                 with st.expander("📊 상세 정보"):
                     st.json(status)
                 
                 # 결과 다운로드
-                if st.session_state.sim_status == "completed":
+                if current_status == "completed":
                     st.divider()
                     st.subheader("Download Results")
                     
