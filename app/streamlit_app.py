@@ -828,6 +828,478 @@ def get_results(job_id: str) -> dict:
         st.warning(f"결과 조회 오류: {e}")
         return None
 
+
+def get_voxel_data(job_id: str):
+    """
+    voxel_data.npz 다운로드 → (coords float32, weights float32) 반환.
+    API 엔드포인트: GET /api/voxels/{job_id}
+    """
+    try:
+        url = f"{ORACLE_API_URL}/api/voxels/{job_id}"
+        headers = {"Authorization": f"Bearer {ORACLE_API_KEY}"}
+        response = requests.get(url, headers=headers, timeout=60)
+        if response.status_code == 200:
+            import io
+            buf = io.BytesIO(response.content)
+            npz = np.load(buf)
+            coords  = npz["coords"].astype(np.float32)   # (N, 3)
+            weights = npz["weights"].astype(np.float32)  # (N,)
+            return coords, weights
+        else:
+            return None, None
+    except Exception as e:
+        st.warning(f"복셀 데이터 조회 오류: {e}")
+        return None, None
+
+
+def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
+                        num_frames: int = 30, max_points: int = 8000) -> str:
+    """
+    복셀 좌표 + Dijkstra 가중치 → 인터랙티브 3D 충진 애니메이션 HTML.
+
+    기능:
+      - ▶ 재생 / ⏸ 일시정지 / ↩ 초기화
+      - 속도 슬라이더 (0.5× ~ 4×)
+      - 프레임 슬라이더 (수동 탐색)
+      - 드래그: 회전  /  Shift+드래그: 이동  /  스크롤: 줌
+      - 자동 회전 토글 (카메라가 천천히 자전)
+      - 충진률 / 물리 시간 HUD
+      - 게이트(가중치=0) 위치 강조
+    """
+    N = len(coords)
+    if N == 0:
+        return "<p>복셀 데이터 없음</p>"
+
+    # ── 좌표 정규화 → [-1, 1] ─────────────────────────────
+    c_min = coords.min(axis=0)
+    c_max = coords.max(axis=0)
+    c_range = np.maximum(c_max - c_min, 1e-6)
+    scale = float(c_range.max())
+    center = (c_min + c_max) / 2.0
+    coords_n = ((coords - center) / scale * 2.0).astype(np.float32)
+
+    # ── 다운샘플 (렌더링 성능 한계) ──────────────────────
+    if N > max_points:
+        # 가중치 분포를 고르게 유지하며 샘플링
+        idx = np.linspace(0, N - 1, max_points, dtype=int)
+        coords_n = coords_n[idx]
+        weights_s = weights[idx]
+    else:
+        weights_s = weights
+
+    # ── 프레임별 임계 가중치 계산 ────────────────────────
+    # 각 프레임에서 보여줄 복셀: weights <= threshold
+    thresholds = np.linspace(0.0, 1.0, num_frames + 1)[1:]  # 0 제외
+
+    # ── JS용 데이터: 각 복셀의 [x,y,z,w] flat array ──────
+    xyzw = np.column_stack([coords_n, weights_s])           # (M, 4)
+    # JSON 직렬화 크기 절감: 소수점 3자리 반올림
+    xyzw_list = [[round(float(v), 3) for v in row] for row in xyzw]
+
+    import json as _json
+    xyzw_json = _json.dumps(xyzw_list)
+    thr_json  = _json.dumps([round(float(t), 4) for t in thresholds])
+    nf        = num_frames
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#0a0f1a;font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
+#wrap{{position:relative;width:100%;height:100%}}
+canvas{{display:block;width:100%;cursor:grab}}
+canvas:active{{cursor:grabbing}}
+
+/* ── HUD ── */
+#hud{{
+  position:absolute;top:10px;left:12px;
+  font-size:11px;background:rgba(0,10,30,.7);
+  border:1px solid #1a3a5c;border-radius:6px;
+  padding:6px 12px;line-height:1.7;
+  pointer-events:none;min-width:170px;
+}}
+#hud .val{{color:#4df0c0;font-weight:bold}}
+#hud .lbl{{color:#557a99}}
+
+/* ── CONTROLS ── */
+#ctrl{{
+  position:absolute;bottom:0;left:0;right:0;
+  background:rgba(5,12,28,.92);
+  border-top:1px solid #1a3a5c;
+  padding:8px 14px;display:flex;flex-direction:column;gap:6px;
+}}
+.ctrl-row{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+
+/* 재생바 */
+#prog-wrap{{flex:1;min-width:120px;position:relative;height:18px;cursor:pointer}}
+#prog-bg{{
+  position:absolute;top:50%;transform:translateY(-50%);
+  width:100%;height:4px;background:#1a3a5c;border-radius:2px;
+}}
+#prog-fill{{
+  position:absolute;top:50%;transform:translateY(-50%);
+  width:0%;height:4px;background:linear-gradient(90deg,#0d6efd,#4df0c0);
+  border-radius:2px;transition:width .1s;
+}}
+#prog-thumb{{
+  position:absolute;top:50%;transform:translate(-50%,-50%);
+  width:14px;height:14px;background:#4df0c0;border-radius:50%;
+  left:0%;cursor:grab;box-shadow:0 0 6px #4df0c0;
+}}
+
+/* 버튼 공통 */
+.btn{{
+  background:rgba(13,110,253,.15);border:1px solid #1a3a5c;
+  color:#8ecfff;border-radius:5px;padding:3px 10px;
+  cursor:pointer;font-size:12px;white-space:nowrap;
+  transition:background .15s,border-color .15s;
+}}
+.btn:hover{{background:rgba(77,240,192,.15);border-color:#4df0c0;color:#4df0c0}}
+.btn.active{{background:rgba(77,240,192,.25);border-color:#4df0c0;color:#4df0c0}}
+
+/* 속도 */
+#spd-wrap{{display:flex;align-items:center;gap:6px;font-size:11px}}
+#spd{{width:80px;accent-color:#4df0c0;cursor:pointer}}
+
+/* 프레임 카운터 */
+#fc{{font-size:11px;color:#4df0c0;min-width:55px;text-align:right}}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <div><span class="lbl">충진률 </span><span class="val" id="h-fill">0.0%</span></div>
+    <div><span class="lbl">물리시간</span><span class="val" id="h-time">0.000 s</span></div>
+    <div><span class="lbl">표시복셀</span><span class="val" id="h-vox">0</span></div>
+    <div style="margin-top:4px;font-size:10px;color:#33556e">드래그:회전 | Shift:이동 | 스크롤:줌</div>
+  </div>
+
+  <div id="ctrl">
+    <!-- 재생바 -->
+    <div class="ctrl-row">
+      <div id="prog-wrap">
+        <div id="prog-bg"></div>
+        <div id="prog-fill"></div>
+        <div id="prog-thumb"></div>
+      </div>
+      <span id="fc">0 / {nf}</span>
+    </div>
+    <!-- 버튼 행 -->
+    <div class="ctrl-row">
+      <button class="btn" id="btn-play" onclick="togglePlay()">▶ Play</button>
+      <button class="btn" id="btn-reset" onclick="resetAnim()">↩ Reset</button>
+      <button class="btn" id="btn-rot" onclick="toggleAutoRot()">⟳ Auto Rotate</button>
+      <div id="spd-wrap">
+        <span style="color:#557a99">Speed</span>
+        <input id="spd" type="range" min="1" max="8" value="2" step="1"
+               oninput="onSpeedChange(this.value)">
+        <span id="spd-lbl" style="color:#4df0c0">1×</span>
+      </div>
+      <div style="margin-left:auto;font-size:10px;color:#33556e">
+        <span style="color:#ff4466">●</span> Gate &nbsp;
+        <span style="display:inline-block;width:10px;height:10px;background:linear-gradient(135deg,#0d6efd,#4df0c0);border-radius:2px;vertical-align:middle"></span> Flow
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════
+// DATA
+// ══════════════════════════════════════════════════
+const XYZW  = {xyzw_json};   // [[x,y,z,w], ...]
+const THRS  = {thr_json};    // 프레임별 임계 가중치
+const NF    = {nf};
+const M     = XYZW.length;
+
+// ══════════════════════════════════════════════════
+// CANVAS SETUP
+// ══════════════════════════════════════════════════
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W = 0, H = 0;
+
+function resize() {{
+  const wrap = document.getElementById('wrap');
+  W = wrap.clientWidth  || 640;
+  // 컨트롤 높이 70px 제외
+  H = Math.max(wrap.clientHeight - 72, 200);
+  canvas.width  = W;
+  canvas.height = H;
+  draw();
+}}
+window.addEventListener('resize', resize);
+
+// ══════════════════════════════════════════════════
+// CAMERA STATE
+// ══════════════════════════════════════════════════
+let rotX = 0.4, rotY = -0.6, zoom = 1.0, panX = 0, panY = 0;
+let autoRot = false, autoRotSpeed = 0.005;
+
+function project(x, y, z) {{
+  // Rot Y
+  let x1 =  x * Math.cos(rotY) + z * Math.sin(rotY);
+  let z1 = -x * Math.sin(rotY) + z * Math.cos(rotY);
+  // Rot X
+  let y2 =  y * Math.cos(rotX) - z1 * Math.sin(rotX);
+  let z2 =  y * Math.sin(rotX) + z1 * Math.cos(rotX);
+  // Perspective
+  const fov = 3.0 * zoom;
+  const dz  = 4.0 + z2;
+  if (dz < 0.01) return null;
+  return [
+    W/2 + panX + (x1 * fov / dz) * W * 0.38,
+    H/2 + panY - (y2 * fov / dz) * W * 0.38
+  ];
+}}
+
+// ══════════════════════════════════════════════════
+// ANIMATION STATE
+// ══════════════════════════════════════════════════
+let curFrame  = 0;
+let playing   = false;
+let lastTick  = 0;
+let frameMs   = 120;   // 기본 1× 속도: 120ms/frame
+const SPEED_TABLE = [240, 120, 80, 60, 40, 30, 20, 15]; // index 0~7
+
+function onSpeedChange(v) {{
+  const idx = parseInt(v) - 1;
+  frameMs = SPEED_TABLE[idx];
+  const labels = ['0.5×','1×','1.5×','2×','3×','4×','6×','8×'];
+  document.getElementById('spd-lbl').textContent = labels[idx];
+}}
+
+function togglePlay() {{
+  playing = !playing;
+  const btn = document.getElementById('btn-play');
+  btn.textContent = playing ? '⏸ Pause' : '▶ Play';
+  btn.classList.toggle('active', playing);
+  if (playing) requestAnimationFrame(animLoop);
+}}
+
+function resetAnim() {{
+  playing = false;
+  document.getElementById('btn-play').textContent = '▶ Play';
+  document.getElementById('btn-play').classList.remove('active');
+  curFrame = 0;
+  updateUI();
+  draw();
+}}
+
+function toggleAutoRot() {{
+  autoRot = !autoRot;
+  document.getElementById('btn-rot').classList.toggle('active', autoRot);
+  if (autoRot || playing) requestAnimationFrame(animLoop);
+}}
+
+function animLoop(ts) {{
+  if (autoRot) {{
+    rotY += autoRotSpeed;
+    draw();
+  }}
+  if (playing) {{
+    if (ts - lastTick >= frameMs) {{
+      lastTick = ts;
+      if (curFrame < NF - 1) {{
+        curFrame++;
+      }} else {{
+        // 루프 재생
+        curFrame = 0;
+      }}
+      updateUI();
+      draw();
+    }}
+  }}
+  if (playing || autoRot) requestAnimationFrame(animLoop);
+}}
+
+function updateUI() {{
+  const thr  = THRS[curFrame] || 0;
+  const fill = (thr * 100).toFixed(1);
+  const voxCount = XYZW.filter(p => p[3] <= thr).length;
+
+  document.getElementById('h-fill').textContent = fill + '%';
+  document.getElementById('h-vox').textContent  = voxCount.toLocaleString();
+  // 물리시간: 프레임 번호에 비례 (결과 JSON에서 theo_fill_time 을 주입하면 더 정확)
+  const t = (curFrame / NF) * (window.FILL_TIME || 1.0);
+  document.getElementById('h-time').textContent =
+    t < 1 ? (t*1000).toFixed(1)+' ms' : t.toFixed(3)+' s';
+
+  // 재생바
+  const pct = (curFrame / (NF-1)) * 100;
+  document.getElementById('prog-fill').style.width  = pct + '%';
+  document.getElementById('prog-thumb').style.left  = pct + '%';
+  document.getElementById('fc').textContent = (curFrame+1) + ' / ' + NF;
+}}
+
+// ══════════════════════════════════════════════════
+// DRAW
+// ══════════════════════════════════════════════════
+function draw() {{
+  ctx.clearRect(0, 0, W, H);
+
+  // 배경
+  const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.8);
+  bg.addColorStop(0, '#0d1829');
+  bg.addColorStop(1, '#060c18');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 그리드
+  ctx.strokeStyle = 'rgba(20,60,100,0.5)';
+  ctx.lineWidth = 0.5;
+  for (let g = -5; g <= 5; g++) {{
+    const step = 0.22;
+    const a = project(g*step, -1.1, -1);
+    const b = project(g*step, -1.1,  1);
+    const c = project(-1,    -1.1,  g*step);
+    const d = project( 1,    -1.1,  g*step);
+    if (a&&b){{ ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); }}
+    if (c&&d){{ ctx.beginPath(); ctx.moveTo(c[0],c[1]); ctx.lineTo(d[0],d[1]); ctx.stroke(); }}
+  }}
+
+  const thr = THRS[curFrame] || 0;
+
+  // ── 복셀 렌더링: 가중치 기준으로 색상 부여 ──────────
+  // 충진 완료 복셀 수집 후 Z-depth 정렬 (페인터 알고리즘)
+  const pts = [];
+  for (let i = 0; i < M; i++) {{
+    const p = XYZW[i];
+    if (p[3] > thr) continue;
+    const proj = project(p[0], p[1], p[2]);
+    if (!proj) continue;
+    pts.push({{ sx: proj[0], sy: proj[1], w: p[3] }});
+  }}
+
+  // Z-depth 근사: w 낮을수록(gate쪽) 나중에 그려 앞에 표시
+  pts.sort((a,b) => b.w - a.w);
+
+  for (const pt of pts) {{
+    const t = thr > 0 ? pt.w / thr : 0;  // 0(gate)~1(front)
+
+    // 색상: gate=짙은청색 → front=밝은청록색
+    const r = Math.round(10  + t * 30);
+    const g = Math.round(80  + t * 170);
+    const b = Math.round(180 + t * 75);
+    const alpha = 0.55 + t * 0.35;
+
+    ctx.fillStyle = `rgba(${{r}},${{g}},${{b}},${{alpha}})`;
+    ctx.beginPath();
+    ctx.arc(pt.sx, pt.sy, 3, 0, Math.PI*2);
+    ctx.fill();
+  }}
+
+  // ── 게이트 복셀 강조 ─────────────────────────────────
+  const gateIdx = XYZW.reduce((bi, p, i) => p[3] < XYZW[bi][3] ? i : bi, 0);
+  const gp = project(XYZW[gateIdx][0], XYZW[gateIdx][1], XYZW[gateIdx][2]);
+  if (gp) {{
+    // glow
+    const grd = ctx.createRadialGradient(gp[0],gp[1],0, gp[0],gp[1],14);
+    grd.addColorStop(0, 'rgba(255,60,80,0.6)');
+    grd.addColorStop(1, 'rgba(255,60,80,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(gp[0],gp[1],14,0,Math.PI*2); ctx.fill();
+    // dot
+    ctx.fillStyle = '#ff4466';
+    ctx.beginPath(); ctx.arc(gp[0],gp[1],5,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.arc(gp[0],gp[1],5,0,Math.PI*2); ctx.stroke();
+  }}
+
+  // ── 축 표시 ─────────────────────────────────────────
+  const axO = project(0,0,0);
+  [[ 0.18,0,0,'#ef4444','X'],[0,0.18,0,'#22c55e','Y'],[0,0,0.18,'#3b82f6','Z']].forEach(([ax,ay,az,col,lbl]) => {{
+    const ep = project(ax,ay,az);
+    if(!axO||!ep) return;
+    ctx.strokeStyle=col; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(axO[0],axO[1]); ctx.lineTo(ep[0],ep[1]); ctx.stroke();
+    ctx.fillStyle=col; ctx.font='bold 10px Courier New';
+    ctx.fillText(lbl, ep[0]+3, ep[1]-3);
+  }});
+}}
+
+// ══════════════════════════════════════════════════
+// 재생바 드래그
+// ══════════════════════════════════════════════════
+const progWrap = document.getElementById('prog-wrap');
+let progDrag = false;
+
+function seekTo(e) {{
+  const rect = progWrap.getBoundingClientRect();
+  const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+  const ratio = Math.max(0, Math.min(1, x / rect.width));
+  curFrame = Math.round(ratio * (NF - 1));
+  updateUI(); draw();
+}}
+progWrap.addEventListener('mousedown',  e => {{ progDrag=true; seekTo(e); }});
+window.addEventListener('mouseup',      () => progDrag=false);
+window.addEventListener('mousemove',    e => {{ if(progDrag) seekTo(e); }});
+progWrap.addEventListener('touchstart', e => {{ progDrag=true; seekTo(e); }}, {{passive:true}});
+window.addEventListener('touchend',     () => progDrag=false);
+window.addEventListener('touchmove',    e => {{ if(progDrag) seekTo(e); }}, {{passive:true}});
+
+// ══════════════════════════════════════════════════
+// 카메라 마우스/터치
+// ══════════════════════════════════════════════════
+let drag=false, lastX=0, lastY=0;
+canvas.addEventListener('mousedown', e=>{{ drag=true; lastX=e.clientX; lastY=e.clientY; }});
+window.addEventListener('mouseup',   ()=>drag=false);
+window.addEventListener('mousemove', e=>{{
+  if(!drag) return;
+  const dx=e.clientX-lastX, dy=e.clientY-lastY;
+  lastX=e.clientX; lastY=e.clientY;
+  if(e.shiftKey){{ panX+=dx; panY+=dy; }}
+  else {{ rotY+=dx*.013; rotX+=dy*.013; rotX=Math.max(-Math.PI/2,Math.min(Math.PI/2,rotX)); }}
+  draw();
+}});
+canvas.addEventListener('wheel', e=>{{
+  e.preventDefault();
+  zoom *= e.deltaY>0 ? 0.92 : 1.09;
+  zoom = Math.max(0.15, Math.min(10, zoom));
+  draw();
+}},{{passive:false}});
+
+// 터치 회전 + 핀치줌
+let t0x=0,t0y=0,pinchD0=0;
+canvas.addEventListener('touchstart', e=>{{
+  if(e.touches.length===1){{ t0x=e.touches[0].clientX; t0y=e.touches[0].clientY; }}
+  else if(e.touches.length===2){{
+    const dx=e.touches[0].clientX-e.touches[1].clientX;
+    const dy=e.touches[0].clientY-e.touches[1].clientY;
+    pinchD0=Math.sqrt(dx*dx+dy*dy);
+  }}
+  e.preventDefault();
+}},{{passive:false}});
+canvas.addEventListener('touchmove', e=>{{
+  if(e.touches.length===1){{
+    rotY+=(e.touches[0].clientX-t0x)*.013;
+    rotX+=(e.touches[0].clientY-t0y)*.013;
+    t0x=e.touches[0].clientX; t0y=e.touches[0].clientY;
+  }} else if(e.touches.length===2){{
+    const dx=e.touches[0].clientX-e.touches[1].clientX;
+    const dy=e.touches[0].clientY-e.touches[1].clientY;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    zoom*=d/pinchD0; zoom=Math.max(0.15,Math.min(10,zoom));
+    pinchD0=d;
+  }}
+  draw(); e.preventDefault();
+}},{{passive:false}});
+
+// ══════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════
+resize();
+updateUI();
+</script>
+</body>
+</html>"""
+    return html
+
+
 # ═══════════════════════════════════════════════════════════
 # UI - 탭 구조
 # ═══════════════════════════════════════════════════════════
@@ -1180,24 +1652,94 @@ with tab3:
                 with st.expander("📊 상세 정보"):
                     st.json(status)
                 
-                # 결과 다운로드
+                # ── 완료: 3D 충진 뷰어 ──────────────────────────────
                 if current_status == "completed":
                     st.divider()
-                    st.subheader("Download Results")
-                    
-                    if st.button("📥 Get Results"):
-                        with st.spinner("결과 조회 중..."):
+                    st.subheader("🎬 3D Flow Visualization")
+
+                    # 결과 JSON 로드 (KPI 표시용)
+                    if "last_result" not in st.session_state or \
+                       st.session_state.get("last_result_job") != st.session_state.job_id:
+                        with st.spinner("결과 로드 중..."):
                             results = get_results(st.session_state.job_id)
-                            
                             if results:
                                 st.session_state.last_result = results
-                                st.success("✅ 결과 조회 완료")
-                                
-                                # 결과 JSON 표시
-                                with st.expander("📄 결과 데이터"):
-                                    st.json(results)
+                                st.session_state.last_result_job = st.session_state.job_id
+
+                    results = st.session_state.get("last_result", {})
+
+                    # KPI 지표
+                    if results:
+                        k1, k2, k3, k4 = st.columns(4)
+                        k1.metric("충진 시간",
+                                  f"{results.get('theo_fill_time', results.get('fill_time_s', '—'))} s")
+                        k2.metric("최고 속도",
+                                  f"{results.get('max_vel_mms', results.get('max_velocity_mms', '—'))} mm/s")
+                        k3.metric("복셀 수",
+                                  f"{results.get('num_voxels', results.get('n_voxels', '—')):,}" 
+                                  if isinstance(results.get('num_voxels', results.get('n_voxels')), int)
+                                  else str(results.get('num_voxels', results.get('n_voxels', '—'))))
+                        k4.metric("해상도", f"{results.get('res_mm', '—')} mm")
+
+                    # 뷰어 설정 행
+                    vc1, vc2, vc3 = st.columns([1, 1, 1])
+                    with vc1:
+                        n_frames = st.slider("프레임 수", 15, 60, 30, 5,
+                                             help="많을수록 부드럽지만 로딩 느림")
+                    with vc2:
+                        max_pts = st.slider("최대 복셀 표시 수", 2000, 15000, 6000, 1000,
+                                            help="많을수록 정밀하지만 렌더링 느림")
+                    with vc3:
+                        viewer_h = st.slider("뷰어 높이 (px)", 400, 900, 580, 50)
+
+                    # 복셀 데이터 로드 (캐시)
+                    cache_key = f"voxel_{st.session_state.job_id}"
+                    if cache_key not in st.session_state:
+                        with st.spinner("복셀 데이터 로드 중..."):
+                            coords, weights = get_voxel_data(st.session_state.job_id)
+                            if coords is not None:
+                                st.session_state[cache_key] = (coords, weights)
                             else:
-                                st.error("❌ 결과 조회 실패")
+                                st.session_state[cache_key] = None
+
+                    voxel_cache = st.session_state.get(cache_key)
+
+                    if voxel_cache is not None:
+                        coords, weights = voxel_cache
+                        fill_time = results.get("theo_fill_time",
+                                    results.get("fill_time_s", 1.0))
+                        viewer_html = build_flow3d_viewer(
+                            coords, weights,
+                            num_frames=n_frames,
+                            max_points=max_pts
+                        )
+                        # fill_time을 JS에 주입
+                        viewer_html = viewer_html.replace(
+                            "window.FILL_TIME || 1.0",
+                            f"window.FILL_TIME || {float(fill_time)}"
+                        )
+                        st.components.v1.html(viewer_html, height=viewer_h, scrolling=False)
+                        st.caption(
+                            "🖱 드래그: 회전 | Shift+드래그: 이동 | 스크롤: 줌 | "
+                            "📱 핀치: 줌 | 🔴 빨간점: 게이트 위치"
+                        )
+                    else:
+                        # voxel API 없을 때 안내
+                        st.warning(
+                            "⚠️ 복셀 데이터를 불러올 수 없습니다. "
+                            "API 서버에 `/api/voxels/{job_id}` 엔드포인트가 필요합니다."
+                        )
+                        st.info(
+                            "**임시 방법:** results.json의 KPI는 위에 표시됩니다. "
+                            "3D 뷰어는 voxel_data.npz 엔드포인트 추가 후 자동 활성화됩니다."
+                        )
+
+                    # 결과 JSON 상세
+                    with st.expander("📄 결과 데이터 (JSON)"):
+                        if results:
+                            st.json(results)
+                        else:
+                            st.info("결과 JSON 없음")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 4: SETTINGS
