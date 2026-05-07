@@ -190,10 +190,14 @@ def run_solver(job_id, stl_path, params):
     job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
     os.makedirs(job_dir, exist_ok=True)
     
+    # [Issue #3] 로그 버퍼 — 오류 발생 시 전체 로그를 job 상태에 저장
+    log_lines = []
+    
     try:
         # 상태 업데이트
         JOBS[job_id]["status"] = "running"
         JOBS[job_id]["start_time"] = datetime.now()
+        JOBS[job_id]["log"] = []
         
         print(f"[Solver] Starting job {job_id}...")
         
@@ -244,28 +248,48 @@ def run_solver(job_id, stl_path, params):
             line = line.rstrip()
             if line:
                 print(f"[Solver][{job_id}] {line}")
+                log_lines.append(line)
 
-                # "PROGRESS:50" 또는 "50%" 형태 파싱
+                # [Issue #3] 진행률 파싱 우선순위:
+                # 1순위: "PROGRESS:50" 형식 (solver.py 에서 명시적 출력)
+                # 2순위: "50%" 형식 (레거시 호환)
                 m = re.search(r"PROGRESS[:\s]+(\d+)", line, re.IGNORECASE)
-                if not m:
-                    m = re.search(r"\b(\d{1,3})\s*%", line)
                 if m:
                     pct = min(int(m.group(1)), 99)
                     JOBS[job_id]["progress"] = pct
+                else:
+                    # 소수점 포함 % 패턴도 처리: "Fill: 6.7%" → 6 캡처
+                    m2 = re.search(r"\b(\d{1,3})(?:\.\d+)?\s*%", line)
+                    if m2:
+                        pct2 = min(int(m2.group(1)), 99)
+                        # 현재 progress 보다 높을 때만 업데이트 (역행 방지)
+                        if pct2 > JOBS[job_id].get("progress", 0):
+                            JOBS[job_id]["progress"] = pct2
+
+                # [Issue #3] 오류 키워드 감지 시 즉시 error 필드 업데이트
+                if any(kw in line for kw in ["MemoryError", "OOM", "Killed", "killed",
+                                              "Error", "Exception", "Traceback"]):
+                    JOBS[job_id]["last_error_line"] = line
 
             if time.time() > deadline:
                 process.kill()
                 JOBS[job_id]["status"] = "timeout"
                 JOBS[job_id]["error"] = f"Timeout after {CONFIG['SOLVER_TIMEOUT']}s"
+                JOBS[job_id]["log"] = log_lines[-100:]  # 마지막 100줄 보존
                 print(f"[Solver] ⏱️ Timeout: {job_id}")
                 return
 
         process.wait()
 
         if process.returncode != 0:
+            # [Issue #3] 실패 시 로그 전체를 error 필드에 저장
+            error_summary = JOBS[job_id].get("last_error_line", f"Solver exited with code {process.returncode}")
             JOBS[job_id]["status"] = "failed"
-            JOBS[job_id]["error"] = f"Solver exited with code {process.returncode}"
+            JOBS[job_id]["error"] = error_summary
+            JOBS[job_id]["return_code"] = process.returncode
+            JOBS[job_id]["log"] = log_lines[-100:]  # 마지막 100줄 보존
             print(f"[Solver] ❌ Job failed with return code {process.returncode}")
+            print(f"[Solver] ❌ Last error: {error_summary}")
             return
         
         # 결과 처리
@@ -282,15 +306,18 @@ def run_solver(job_id, stl_path, params):
         JOBS[job_id]["progress"] = 100
         JOBS[job_id]["status"] = "completed"
         JOBS[job_id]["end_time"] = datetime.now()
+        JOBS[job_id]["log"] = log_lines[-50:]  # 완료 시에도 마지막 50줄 보존
         print(f"[Solver] ✅ Job completed: {job_id}")
         
     except subprocess.TimeoutExpired:
         JOBS[job_id]["status"] = "timeout"
         JOBS[job_id]["error"] = f"Timeout after {CONFIG['SOLVER_TIMEOUT']}s"
+        JOBS[job_id]["log"] = log_lines[-100:]
         print(f"[Solver] ⏱️ Timeout: {job_id}")
     except Exception as e:
         JOBS[job_id]["status"] = "error"
         JOBS[job_id]["error"] = str(e)
+        JOBS[job_id]["log"] = log_lines[-100:]
         print(f"[Solver] 💥 Error: {e}")
         traceback.print_exc()
 
@@ -384,6 +411,8 @@ def submit_simulation():
             "params": params,
             "file_size_mb": file_size / 1e6,
             "progress": 0,
+            "error": None,
+            "log": [],
         }
         
         # Solver 실행 (백그라운드 스레드)
@@ -429,8 +458,11 @@ def get_job_status(job_id):
         "progress": job.get("progress", 0),
     }
     
-    if job["status"] == "failed" or job["status"] == "error":
-        response["error"] = job.get("error")
+    # [Issue #3] failed / error / timeout 상태에서 error 메시지와 로그 포함
+    if job["status"] in ("failed", "error", "timeout"):
+        response["error"] = job.get("error") or "알 수 없는 오류"
+        response["log"] = job.get("log", [])
+        response["return_code"] = job.get("return_code")
     
     if job["status"] == "completed":
         response["results_url"] = f"/api/results/{job_id}"
@@ -446,14 +478,15 @@ def get_results(job_id):
     
     job = JOBS[job_id]
     if job["status"] != "completed":
-        return jsonify({"error": f"Job status is {job['status']}"}), 400
+        return jsonify({"error": f"Job status is {job['status']}",
+                        "detail": job.get("error")}), 400
     
     try:
         job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
         
         # 결과 파일들 수집
         result_files = []
-        for filename in ["results.json", "results.txt"]:
+        for filename in ["results.json", "results.txt", "voxel_data.npz"]:
             filepath = os.path.join(job_dir, filename)
             if os.path.exists(filepath):
                 result_files.append(filename)
