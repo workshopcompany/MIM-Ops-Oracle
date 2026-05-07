@@ -355,24 +355,51 @@ def visualize_mesh_with_gate(mesh: trimesh.Trimesh, gate_pos: list = None):
         has_gate_js = "true" if has_gate else "false"
 
         html = f"""<!DOCTYPE html>
-<html>
+<html style="height:100%;margin:0;padding:0;">
 <head>
 <meta charset="utf-8">
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; }}
-body {{ background:#111827; display:flex; flex-direction:column;
-       align-items:center; font-family:monospace; color:#9ca3af; }}
-#wrap {{ position:relative; width:100%; }}
-canvas {{ display:block; width:100%; cursor:grab; }}
-canvas:active {{ cursor:grabbing; }}
+html, body {{
+  height: 100%;
+  background: #111827;
+  font-family: monospace;
+  color: #9ca3af;
+  overflow: hidden;
+}}
+/* body를 세로 flex 컨테이너로 — 캔버스가 남은 공간 전부 차지 */
+body {{ display:flex; flex-direction:column; }}
+#wrap {{
+  position: relative;
+  flex: 1 1 auto;   /* 남은 높이 전부 */
+  min-height: 0;    /* flex 자식 overflow 방지 */
+  overflow: hidden;
+}}
+/* 캔버스가 #wrap을 100% 채우도록 */
+canvas {{
+  display: block;
+  width:  100%;
+  height: 100%;
+  cursor: grab;
+}}
+canvas:active {{ cursor: grabbing; }}
 #hud {{ position:absolute; top:6px; left:8px; font-size:11px;
         background:rgba(0,0,0,.55); padding:3px 8px; border-radius:4px;
         pointer-events:none; }}
 #legend {{ position:absolute; bottom:6px; left:8px; font-size:11px;
            background:rgba(0,0,0,.55); padding:3px 8px; border-radius:4px;
            pointer-events:none; }}
-#bar {{ width:100%; padding:4px 10px; display:flex; gap:12px;
-        background:#1f2937; font-size:11px; align-items:center; }}
+/* 하단 툴바: 고정 높이 36px */
+#bar {{
+  flex: 0 0 36px;
+  width: 100%;
+  padding: 4px 10px;
+  display: flex;
+  gap: 12px;
+  background: #1f2937;
+  font-size: 11px;
+  align-items: center;
+}}
 button {{ background:#374151; color:#d1d5db; border:none; border-radius:4px;
           padding:2px 10px; cursor:pointer; font-size:11px; }}
 button:hover {{ background:#4b5563; }}
@@ -410,7 +437,8 @@ let W, H;
 function resize() {{
   const wrap = document.getElementById('wrap');
   W = wrap.clientWidth  || 640;
-  H = Math.round(W * 0.65);
+  // ★ wrap.clientHeight를 그대로 사용 — flex layout이 남은 높이를 자동 계산
+  H = wrap.clientHeight || 400;
   canvas.width  = W;
   canvas.height = H;
   draw();
@@ -829,6 +857,50 @@ def get_results(job_id: str) -> dict:
         return None
 
 
+def get_frames(job_id: str) -> tuple:
+    """
+    서버 /api/frames/{job_id} 에서 frame PNG들을 base64로 받아 반환.
+    반환: (frames_list, error_msg)
+      frames_list: ["data:image/png;base64,...", ...] 순서 보장
+      error_msg:   실패 시 원인 문자열, 성공 시 None
+    """
+    try:
+        url = f"{ORACLE_API_URL}/api/frames/{job_id}"
+        headers = {"Authorization": f"Bearer {ORACLE_API_KEY}"}
+        response = requests.get(url, headers=headers, timeout=60)
+        if response.status_code == 200:
+            data = response.json()
+            frames = data.get("frames", [])
+            if not frames:
+                return [], "서버 응답은 성공했지만 frames 배열이 비어 있습니다."
+            return frames, None
+        elif response.status_code == 404:
+            try:
+                detail = response.json()
+                tip = detail.get("tip", "")
+                searched = detail.get("searched", [])
+                msg = f"404 — {detail.get('error', 'Not found')}"
+                if tip:
+                    msg += f"\n💡 {tip}"
+                if searched:
+                    msg += f"\n탐색한 경로: {searched}"
+            except Exception:
+                msg = f"404 — frames 디렉토리를 찾을 수 없습니다."
+            return [], msg
+        elif response.status_code == 400:
+            try:
+                detail = response.json().get("error", response.text)
+            except Exception:
+                detail = response.text
+            return [], f"400 — {detail}"
+        else:
+            return [], f"HTTP {response.status_code}: {response.text[:200]}"
+    except requests.exceptions.Timeout:
+        return [], "요청 시간 초과 (60s). 프레임 수가 너무 많거나 서버가 느릴 수 있습니다."
+    except Exception as e:
+        return [], f"네트워크 오류: {e}"
+
+
 def get_voxel_data(job_id: str):
     """
     voxel_data.npz 다운로드 → (coords float32, weights float32) 반환.
@@ -870,22 +942,21 @@ def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
     if N == 0:
         return "<p>복셀 데이터 없음</p>"
 
-    # ── 좌표 정규화 → [-1, 1] ─────────────────────────────
-    c_min = coords.min(axis=0)
-    c_max = coords.max(axis=0)
-    c_range = np.maximum(c_max - c_min, 1e-6)
-    scale = float(c_range.max())
-    center = (c_min + c_max) / 2.0
-    coords_n = ((coords - center) / scale * 2.0).astype(np.float32)
-
-    # ── 다운샘플 (렌더링 성능 한계) ──────────────────────
+    # ── ★ 수정: 다운샘플을 정규화 이전에 수행 ────────────
     if N > max_points:
-        # 가중치 분포를 고르게 유지하며 샘플링
         idx = np.linspace(0, N - 1, max_points, dtype=int)
-        coords_n = coords_n[idx]
+        coords_s  = coords[idx]
         weights_s = weights[idx]
     else:
+        coords_s  = coords
         weights_s = weights
+
+    # ── 좌표 정규화 → [-1, 1]  (샘플링 이후에 수행) ──────
+    c_min  = coords_s.min(axis=0)
+    c_max  = coords_s.max(axis=0)
+    scale  = float(np.maximum(c_max - c_min, 1e-6).max())
+    center = (c_min + c_max) / 2.0
+    coords_n = ((coords_s - center) / scale * 2.0).astype(np.float32)
 
     # ── 프레임별 임계 가중치 계산 ────────────────────────
     # 각 프레임에서 보여줄 복셀: weights <= threshold
@@ -1410,7 +1481,7 @@ with tab1:
                 [st.session_state.gate_x, st.session_state.gate_y, st.session_state.gate_z]
             )
             if html_3d:
-                components.html(html_3d, height=520, scrolling=False)
+                components.html(html_3d, height=560, scrolling=False)
         else:
             st.info("💡 STL 파일을 업로드하면 3D 뷰어가 표시됩니다.")
     
@@ -1652,7 +1723,7 @@ with tab3:
                 with st.expander("📊 상세 정보"):
                     st.json(status)
                 
-                # ── 완료: 3D 충진 뷰어 ──────────────────────────────
+                # ── 완료: 결과 표시 ──────────────────────────────────
                 if current_status == "completed":
                     st.divider()
                     st.subheader("🎬 3D Flow Visualization")
@@ -1676,63 +1747,115 @@ with tab3:
                         k2.metric("최고 속도",
                                   f"{results.get('max_vel_mms', results.get('max_velocity_mms', '—'))} mm/s")
                         k3.metric("복셀 수",
-                                  f"{results.get('num_voxels', results.get('n_voxels', '—')):,}" 
+                                  f"{results.get('num_voxels', results.get('n_voxels', '—')):,}"
                                   if isinstance(results.get('num_voxels', results.get('n_voxels')), int)
                                   else str(results.get('num_voxels', results.get('n_voxels', '—'))))
                         k4.metric("해상도", f"{results.get('res_mm', '—')} mm")
 
-                    # 뷰어 설정 행
-                    vc1, vc2, vc3 = st.columns([1, 1, 1])
-                    with vc1:
-                        n_frames = st.slider("프레임 수", 15, 60, 30, 5,
-                                             help="많을수록 부드럽지만 로딩 느림")
-                    with vc2:
-                        max_pts = st.slider("최대 복셀 표시 수", 2000, 15000, 6000, 1000,
-                                            help="많을수록 정밀하지만 렌더링 느림")
-                    with vc3:
-                        viewer_h = st.slider("뷰어 높이 (px)", 400, 900, 580, 50)
+                    # ── ★ 1순위: 프레임 이미지 슬라이더 ─────────────────
+                    frame_cache_key = f"frames_{st.session_state.job_id}"
+                    frame_err_key   = f"frames_err_{st.session_state.job_id}"
 
-                    # 복셀 데이터 로드 (캐시)
-                    cache_key = f"voxel_{st.session_state.job_id}"
-                    if cache_key not in st.session_state:
-                        with st.spinner("복셀 데이터 로드 중..."):
-                            coords, weights = get_voxel_data(st.session_state.job_id)
-                            if coords is not None:
-                                st.session_state[cache_key] = (coords, weights)
-                            else:
-                                st.session_state[cache_key] = None
+                    if frame_cache_key not in st.session_state:
+                        with st.spinner("프레임 이미지 로드 중..."):
+                            frames, err = get_frames(st.session_state.job_id)
+                            st.session_state[frame_cache_key] = frames
+                            st.session_state[frame_err_key]   = err
 
-                    voxel_cache = st.session_state.get(cache_key)
+                    frames    = st.session_state.get(frame_cache_key, [])
+                    frame_err = st.session_state.get(frame_err_key, None)
 
-                    if voxel_cache is not None:
-                        coords, weights = voxel_cache
-                        fill_time = results.get("theo_fill_time",
-                                    results.get("fill_time_s", 1.0))
-                        viewer_html = build_flow3d_viewer(
-                            coords, weights,
-                            num_frames=n_frames,
-                            max_points=max_pts
+                    if frames:
+                        # ── 프레임 이미지 표시 ──────────────────────────
+                        viewer_h = st.slider("뷰어 높이 (px)", 400, 1000, 700, 50,
+                                             key="frame_viewer_h")
+                        frame_idx = st.slider(
+                            f"프레임  (총 {len(frames)}개)",
+                            min_value=1, max_value=len(frames),
+                            value=st.session_state.get("frame_slider", 1),
+                            step=1, key="frame_slider",
                         )
-                        # fill_time을 JS에 주입
-                        viewer_html = viewer_html.replace(
-                            "window.FILL_TIME || 1.0",
-                            f"window.FILL_TIME || {float(fill_time)}"
+                        img_b64 = frames[frame_idx - 1]
+                        st.components.v1.html(
+                            f"""<div style="text-align:center;background:#0a0f1a;
+                                           padding:8px;border-radius:8px;">
+                              <img src="{img_b64}"
+                                   style="max-width:100%;max-height:{viewer_h}px;
+                                          object-fit:contain;border-radius:6px;" />
+                              <div style="color:#4df0c0;font-size:12px;margin-top:4px;
+                                          font-family:monospace;">
+                                Frame {frame_idx} / {len(frames)}
+                              </div>
+                            </div>""",
+                            height=viewer_h + 50,
+                            scrolling=False,
                         )
-                        st.components.v1.html(viewer_html, height=viewer_h, scrolling=False)
-                        st.caption(
-                            "🖱 드래그: 회전 | Shift+드래그: 이동 | 스크롤: 줌 | "
-                            "📱 핀치: 줌 | 🔴 빨간점: 게이트 위치"
-                        )
+                        # 이전/다음 버튼
+                        bc1, bc2, bc3 = st.columns(3)
+                        with bc1:
+                            if st.button("⏮ 처음", use_container_width=True):
+                                st.session_state["frame_slider"] = 1
+                                st.rerun()
+                        with bc2:
+                            if st.button("◀ 이전", use_container_width=True,
+                                         disabled=(frame_idx <= 1)):
+                                st.session_state["frame_slider"] = frame_idx - 1
+                                st.rerun()
+                        with bc3:
+                            if st.button("다음 ▶", use_container_width=True,
+                                         disabled=(frame_idx >= len(frames))):
+                                st.session_state["frame_slider"] = frame_idx + 1
+                                st.rerun()
+
                     else:
-                        # voxel API 없을 때 안내
-                        st.warning(
-                            "⚠️ 복셀 데이터를 불러올 수 없습니다. "
-                            "API 서버에 `/api/voxels/{job_id}` 엔드포인트가 필요합니다."
-                        )
-                        st.info(
-                            "**임시 방법:** results.json의 KPI는 위에 표시됩니다. "
-                            "3D 뷰어는 voxel_data.npz 엔드포인트 추가 후 자동 활성화됩니다."
-                        )
+                        # ── ★ 실패 시: 상세 에러 + 2순위 voxel 뷰어 ─────
+                        st.warning("⚠️ 프레임 이미지를 서버에서 불러올 수 없습니다.")
+                        if frame_err:
+                            with st.expander("🔍 오류 상세", expanded=True):
+                                st.code(frame_err)
+                        st.caption("↩ 재시도하려면 아래 버튼을 누르세요.")
+                        if st.button("🔄 프레임 다시 불러오기"):
+                            del st.session_state[frame_cache_key]
+                            if frame_err_key in st.session_state:
+                                del st.session_state[frame_err_key]
+                            st.rerun()
+
+                        st.divider()
+                        st.markdown("**대체 뷰어: 복셀 3D 인터랙티브**")
+                        vc1, vc2, vc3 = st.columns(3)
+                        with vc1:
+                            n_frames_v = st.slider("프레임 수", 15, 60, 30, 5)
+                        with vc2:
+                            max_pts = st.slider("최대 복셀 수", 2000, 15000, 6000, 1000)
+                        with vc3:
+                            viewer_h_v = st.slider("뷰어 높이 (px)", 400, 900, 580, 50)
+
+                        cache_key = f"voxel_{st.session_state.job_id}"
+                        if cache_key not in st.session_state:
+                            with st.spinner("복셀 데이터 로드 중..."):
+                                coords, weights = get_voxel_data(st.session_state.job_id)
+                                st.session_state[cache_key] = (
+                                    (coords, weights) if coords is not None else None
+                                )
+
+                        voxel_cache = st.session_state.get(cache_key)
+                        if voxel_cache is not None:
+                            coords, weights = voxel_cache
+                            fill_time = results.get("theo_fill_time",
+                                        results.get("fill_time_s", 1.0))
+                            viewer_html = build_flow3d_viewer(
+                                coords, weights,
+                                num_frames=n_frames_v, max_points=max_pts
+                            )
+                            viewer_html = viewer_html.replace(
+                                "window.FILL_TIME || 1.0",
+                                f"window.FILL_TIME || {float(fill_time)}"
+                            )
+                            st.components.v1.html(viewer_html,
+                                                  height=viewer_h_v, scrolling=False)
+                        else:
+                            st.info("복셀 데이터도 없습니다. "
+                                    "서버의 `/api/frames` 또는 `/api/voxels` 엔드포인트를 확인하세요.")
 
                     # 결과 JSON 상세
                     with st.expander("📄 결과 데이터 (JSON)"):
