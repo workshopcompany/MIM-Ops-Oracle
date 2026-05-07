@@ -215,7 +215,7 @@ def run_solver(job_id, stl_path, params):
         
         # Solver 명령 구성
         cmd = [
-            "python", "solver/solver.py",
+            "python", "-u", "solver/solver.py",  # -u: 출력 버퍼링 비활성화 (실시간 로그)
             "--signal_id", job_id,
             "--stl_path", stl_path,
             "--gate_x", str(params.get("gate_x", 0.0)),
@@ -524,6 +524,29 @@ def get_results(job_id):
     except Exception as e:
         print(f"[API] Error in /results: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/voxels/<job_id>", methods=["GET"])
+@require_api_key
+def get_voxels(job_id):
+    """voxel_data.npz 반환 — streamlit 3D 뷰어가 이 엔드포인트를 호출합니다."""
+    if job_id not in JOBS:
+        return jsonify({"error": "Job not found"}), 404
+
+    job = JOBS[job_id]
+    if job["status"] != "completed":
+        return jsonify({"error": f"Job not completed (status: {job['status']})"}), 400
+
+    npz_path = os.path.join(CONFIG["RESULTS_DIR"], job_id, "voxel_data.npz")
+    if not os.path.exists(npz_path):
+        return jsonify({"error": "voxel_data.npz not found — solver 버전을 확인하세요"}), 404
+
+    return send_file(
+        npz_path,
+        mimetype="application/octet-stream",
+        as_attachment=True,
+        download_name="voxel_data.npz"
+    )
+
 
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
 @require_api_key
