@@ -1,157 +1,65 @@
 # ═══════════════════════════════════════════════════════════════════════
-# Docker Compose - MIM-Ops Pro (로컬 개발 & 테스트)
-# 사용: docker-compose up
+# Dockerfile - MIM-Ops Pro API Server & Solver
+# Oracle Cloud Compute Instance 배포용
 # ═══════════════════════════════════════════════════════════════════════
 
+FROM python:3.10-slim-bookworm
 
-services:
-  # ─────────────────── Flask API Server ───────────────────
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    
-    container_name: mim-ops-api
-    
-    ports:
-      - "5000:5000"
-    
-    environment:
-      - FLASK_APP=api/server.py
-      - FLASK_ENV=development
-      - API_KEY=${API_KEY:-default-key-change-in-production}
-      - DEBUG=true
-      - API_HOST=0.0.0.0
-      - API_PORT=5000
-      - MAX_FILE_SIZE=104857600
-      - SOLVER_TIMEOUT=3600
-      - TEMP_DIR=/tmp/mim-ops
-      - RESULTS_DIR=/app/results
-      - USE_ORACLE=${USE_ORACLE:-false}
-      - ORACLE_COMPARTMENT_ID=${ORACLE_COMPARTMENT_ID:-}
-      - ORACLE_BUCKET_NAME=${ORACLE_BUCKET_NAME:-mim-ops-results}
-      - ORACLE_REGION=${ORACLE_REGION:-ap-seoul-1}
-    
-    volumes:
-      # 코드 실시간 반영 (개발 모드)
-      - ./:/app
-      # 결과 저장 디렉토리 (호스트와 공유)
-      - ./results:/app/results
-      # 로그 디렉토리
-      - ./logs:/app/logs
-      # Oracle 설정 파일 (선택사항)
-      - ~/.oci:/home/appuser/.oci:ro
-    
-    command: python -m flask run --host=0.0.0.0 --port=5000
-    
-    networks:
-      - mim-network
-    
-    depends_on:
-      postgres:
-        condition: service_healthy
-    
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+LABEL maintainer="workshopcompany"
+LABEL description="MIM-Ops Pro API Server - Oracle Cloud Edition"
 
-  # ─────────────────── Streamlit UI ───────────────────
-  streamlit:
-    image: python:3.10-slim-bookworm
-    
-    container_name: mim-ops-streamlit
-    
-    ports:
-      - "8501:8501"
-    
-    environment:
-      - STREAMLIT_SERVER_PORT=8501
-      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
-    
-    volumes:
-      - ./app:/app
-      - ./.streamlit:/app/.streamlit        # ← 이 줄 추가
+# 작업 디렉토리
+WORKDIR /app
 
-      - ./material_property.txt:/app/material_property.txt
-    
-    working_dir: /app
-    
-    
-    command: >
-      bash -c "pip install --no-cache-dir --default-timeout=10000 streamlit==1.28.1 plotly pyvista numpy scipy trimesh rtree &&
-               streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0"
-    
-    networks:
-      - mim-network
-    
-    depends_on:
-      api:
-        condition: service_healthy
+# ─────────────────── 시스템 의존성 설치 ───────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # VTK 및 그래픽 라이브러리
+# 변경 후
+    libvtk9.1 \
+    libgl1 \
+    libgomp1 \
+    # 빌드 도구
+    build-essential \
+    git \
+    # 기타
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
+# ─────────────────── Python 의존성 설치 ───────────────────
+COPY requirements.txt .
 
-  # ─────────────────── PostgreSQL (선택사항: Job 상태 저장) ───────────────────
-  postgres:
-    image: postgres:15-alpine
-    
-    container_name: mim-ops-postgres
-    
-    environment:
-      - POSTGRES_DB=mim_ops
-      - POSTGRES_USER=mim_user
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres-dev-password}
-    
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    
-    networks:
-      - mim-network
-  
-    
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mim_user -d mim_ops"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    
-    # 프로덕션에서는 이 주석을 해제하고 데이터 지속성 설정
-    # restart: always
+RUN pip install --no-cache-dir \
+    --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
+# ─────────────────── 애플리케이션 코드 복사 ───────────────────
+COPY . .
 
-# ─────────────────── Networks ───────────────────
-networks:
-  mim-network:
-    driver: bridge
+# ─────────────────── 디렉토리 생성 ───────────────────
+RUN mkdir -p /app/results /app/logs /tmp/mim-ops
 
-# ─────────────────── Volumes ───────────────────
-volumes:
-  postgres_data:
-    driver: local
+# ─────────────────── 환경 변수 설정 ───────────────────
+ENV FLASK_APP=api/server.py \
+    FLASK_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    API_HOST=0.0.0.0 \
+    API_PORT=5000
 
-# ═════════════════════════════════════════════════════════════════════════
-# 사용 방법:
-# 
-# 1. 환경 설정:
-#    cp .env.example .env
-#    nano .env  # 필요시 수정
-# 
-# 2. 시작:
-#    docker-compose up -d
-# 
-# 3. 로그 확인:
-#    docker-compose logs -f api
-#    docker-compose logs -f streamlit
-# 
-# 4. 중지:
-#    docker-compose down
-# 
-# 5. 정리 (볼륨 포함):
-#    docker-compose down -v
-# 
-# 접속 URL:
-#    - Streamlit: http://localhost:8501
-#    - API: http://localhost:5000
-#    - API Health: http://localhost:5000/health
-# 
-# ═════════════════════════════════════════════════════════════════════════
+# ─────────────────── 헬스 체크 ───────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# ─────────────────── 포트 노출 ───────────────────
+EXPOSE 5000
+
+# ─────────────────── 실행 ───────────────────
+# Gunicorn을 사용하여 프로덕션급 WSGI 서버 실행
+CMD ["gunicorn", \
+     "--bind", "0.0.0.0:5000", \
+     "--workers", "4", \
+     "--worker-class", "sync", \
+     "--timeout", "300", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "api.server:app"]
