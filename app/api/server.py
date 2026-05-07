@@ -189,57 +189,83 @@ def run_solver(job_id, stl_path, params):
     """solver.py 실행 (별도 스레드)"""
     job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
     os.makedirs(job_dir, exist_ok=True)
-    
-    # [Issue #3] 로그 버퍼 — 오류 발생 시 전체 로그를 job 상태에 저장
+
     log_lines = []
-    
+
     try:
-        # 상태 업데이트
         JOBS[job_id]["status"] = "running"
         JOBS[job_id]["start_time"] = datetime.now()
         JOBS[job_id]["log"] = []
-        
+
         print(f"[Solver] Starting job {job_id}...")
-        
-        # ✅ solver 폴더를 job 디렉토리에 복사 (실행 전)
-        import shutil
-        solver_src = "/app/solver"  # Docker 경로
-        solver_dst = os.path.join(job_dir, "solver")
-        if not os.path.exists(solver_dst):
-            try:
-                shutil.copytree(solver_src, solver_dst, dirs_exist_ok=True)
-                print(f"[Solver] ✓ Copied solver from {solver_src} to {solver_dst}")
-            except Exception as e:
-                print(f"[Solver] ⚠️ Failed to copy solver: {e}")
-                # 계속 진행 (혹은 실패 처리)
-        
-        # Solver 명령 구성
+
+        # ── solver.py 위치를 절대경로로 확정 ──────────────────────────
+        # 후보 경로를 순서대로 탐색:
+        #   1) 이 server.py 와 같은 디렉토리
+        #   2) /app/solver/solver.py  (Docker 표준 경로)
+        #   3) /app/solver.py
+        server_dir  = os.path.dirname(os.path.abspath(__file__))
+        solver_candidates = [
+            os.path.join(server_dir, "solver", "solver.py"),
+            os.path.join(server_dir, "solver.py"),
+            "/app/solver/solver.py",
+            "/app/solver.py",
+        ]
+        solver_py = None
+        for c in solver_candidates:
+            if os.path.isfile(c):
+                solver_py = c
+                break
+
+        if solver_py is None:
+            err = (
+                f"solver.py를 찾을 수 없습니다. 탐색한 경로: {solver_candidates}"
+            )
+            print(f"[Solver] ❌ {err}")
+            JOBS[job_id]["status"] = "failed"
+            JOBS[job_id]["error"]  = err
+            JOBS[job_id]["log"]    = [err]
+            return
+
+        print(f"[Solver] Using solver: {solver_py}")
+
+        # ── stl_path 절대경로 보장 ────────────────────────────────────
+        stl_abs = os.path.abspath(stl_path) if not os.path.isabs(stl_path) \
+                  else stl_path
+        if not os.path.isfile(stl_abs):
+            err = f"STL 파일을 찾을 수 없습니다: {stl_abs}"
+            print(f"[Solver] ❌ {err}")
+            JOBS[job_id]["status"] = "failed"
+            JOBS[job_id]["error"]  = err
+            JOBS[job_id]["log"]    = [err]
+            return
+
+        # Solver 명령 구성 (절대경로 사용, cwd 불필요)
         cmd = [
-            "python", "-u", "solver/solver.py",  # -u: 출력 버퍼링 비활성화 (실시간 로그)
+            "python", solver_py,
             "--signal_id", job_id,
-            "--stl_path", stl_path,
-            "--gate_x", str(params.get("gate_x", 0.0)),
-            "--gate_y", str(params.get("gate_y", 0.0)),
-            "--gate_z", str(params.get("gate_z", 0.0)),
-            "--gate_dia", str(params.get("gate_dia", 2.0)),
-            "--vel_mms", str(params.get("vel_mms", 25.0)),
-            "--etime", str(params.get("etime", 1.0)),
-            "--num_frames", str(params.get("num_frames", 15)),
-            "--mesh_res_mm", str(params.get("mesh_res_mm", 0.5)),
-            "--material", str(params.get("material", "17-4PH")),
+            "--stl_path",  stl_abs,          # ★ 절대경로
+            "--gate_x",    str(params.get("gate_x", 0.0)),
+            "--gate_y",    str(params.get("gate_y", 0.0)),
+            "--gate_z",    str(params.get("gate_z", 0.0)),
+            "--gate_dia",  str(params.get("gate_dia", 2.0)),
+            "--vel_mms",   str(params.get("vel_mms", 25.0)),
+            "--etime",     str(params.get("etime", 1.0)),
+            "--num_frames",str(params.get("num_frames", 15)),
+            "--mesh_res_mm",str(params.get("mesh_res_mm", 0.5)),
+            "--material",  str(params.get("material", "17-4PH")),
             "--screw_dia", str(params.get("screw_dia", 28.0)),
         ]
-        
-        # 작업 디렉토리에서 실행 (Popen으로 실시간 진행률 추적)
+
         import re
-        
+
         process = subprocess.Popen(
             cmd,
-            cwd=job_dir,
+            cwd=job_dir,                     # 작업 디렉토리는 job_dir 유지
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # stderr를 stdout으로 병합
+            stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1  # 한 줄씩 버퍼링
+            bufsize=1
         )
 
         deadline = time.time() + CONFIG["SOLVER_TIMEOUT"]
@@ -298,10 +324,34 @@ def run_solver(job_id, stl_path, params):
             with open(results_file) as f:
                 results = json.load(f)
             JOBS[job_id]["results"] = results
-            
-            # Oracle Storage에 결과 업로드
+
             if oracle_client.enabled:
                 oracle_client.upload_file(results_file, "results.json", job_id)
+
+        # ── ★ 수정: 실제 저장된 파일 목록 확인 후 completed 판정 ──
+        frames_dir_check = os.path.join(job_dir, "frames")
+        frames_exist = (
+            os.path.isdir(frames_dir_check) and
+            any(f.endswith(".png") for f in os.listdir(frames_dir_check))
+        )
+        npz_exists     = os.path.isfile(os.path.join(job_dir, "voxel_data.npz"))
+        results_exists = os.path.isfile(os.path.join(job_dir, "results.json"))
+
+        print(f"[Solver] Output check — results.json:{results_exists} "
+              f"voxel_data.npz:{npz_exists} frames:{frames_exist}", flush=True)
+
+        if not results_exists:
+            # 파일이 없으면 solver가 실제로 완료되지 않은 것
+            err = (
+                "solver가 종료됐지만 results.json이 없습니다. "
+                "solver 로그를 확인하세요."
+            )
+            JOBS[job_id]["status"]      = "failed"
+            JOBS[job_id]["error"]       = err
+            JOBS[job_id]["log"]         = log_lines[-100:]
+            JOBS[job_id]["return_code"] = 0   # 종료코드는 0이었으나 파일 없음
+            print(f"[Solver] ❌ {err}")
+            return
         
         JOBS[job_id]["progress"] = 100
         JOBS[job_id]["status"] = "completed"
@@ -439,14 +489,8 @@ def submit_simulation():
 @require_api_key
 def get_job_status(job_id):
     """작업 상태 조회"""
-    # 서버 재시작 후 메모리 유실 시 파일로 복구
     if job_id not in JOBS:
-        job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
-        results_path = os.path.join(job_dir, "results.json")
-        if os.path.exists(results_path):
-            JOBS[job_id] = {"status": "completed", "created_at": "", "log": [], "progress": 100}
-        else:
-            return jsonify({"error": "Job not found"}), 404
+        return jsonify({"error": "Job not found"}), 404
     
     job = JOBS[job_id]
     
@@ -479,92 +523,107 @@ def get_job_status(job_id):
 @require_api_key
 def get_results(job_id):
     """결과 다운로드"""
-    # JOBS 메모리에 없어도 파일이 있으면 복구해서 응답
-    job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
-    results_path = os.path.join(job_dir, "results.json")
-
     if job_id not in JOBS:
-        # 서버 재시작 후 메모리 유실 → 파일로 복구
-        if os.path.exists(results_path):
-            JOBS[job_id] = {"status": "completed", "created_at": "", "log": []}
-        else:
-            return jsonify({"error": "Job not found"}), 404
-
+        return jsonify({"error": "Job not found"}), 404
+    
     job = JOBS[job_id]
     if job["status"] != "completed":
         return jsonify({"error": f"Job status is {job['status']}",
                         "detail": job.get("error")}), 400
-
+    
     try:
+        job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
+
         # 결과 파일들 수집
         result_files = []
         for filename in ["results.json", "results.txt", "voxel_data.npz"]:
-            filepath = os.path.join(job_dir, filename)
-            if os.path.exists(filepath):
+            if os.path.exists(os.path.join(job_dir, filename)):
                 result_files.append(filename)
 
-        # frames 디렉토리 압축
+        # frames 디렉토리 PNG 수 확인
         frames_dir = os.path.join(job_dir, "frames")
-        if os.path.exists(frames_dir):
-            import zipfile
-            frames_zip = os.path.join(job_dir, "frames.zip")
-            with zipfile.ZipFile(frames_zip, 'w') as zf:
-                for root, dirs, files in os.walk(frames_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, frames_dir)
-                        zf.write(file_path, arcname)
-            result_files.append("frames.zip")
-
+        num_frames = 0
+        if os.path.isdir(frames_dir):
+            pngs = [f for f in os.listdir(frames_dir) if f.endswith(".png")]
+            num_frames = len(pngs)
+            if num_frames > 0:
+                result_files.append(f"frames/ ({num_frames} PNGs)")
+        
+        # 결과 구성
         response_data = {
             "job_id": job_id,
             "status": "completed",
             "completed_at": job.get("end_time", datetime.now()).isoformat(),
             "files": result_files,
         }
-
-        # results.json 포함 + streamlit KPI 키 별칭 추가
+        
+        # results.json 포함
+        results_path = os.path.join(job_dir, "results.json")
         if os.path.exists(results_path):
             with open(results_path) as f:
-                r = json.load(f)
-            response_data["results"] = r
-            # streamlit이 기대하는 키 별칭 (solver.py 키명과 다를 수 있음)
-            response_data["theo_fill_time"] = r.get("theo_fill_time", r.get("Theo Fill Time (s)"))
-            response_data["max_vel_mms"]    = r.get("max_vel_mms",    r.get("Injection Vel (mm/s)"))
-            response_data["num_voxels"]     = r.get("num_voxels",     r.get("Total Voxels"))
-            response_data["res_mm"]         = r.get("res_mm",         r.get("Mesh Res (mm)"))
-
+                response_data["results"] = json.load(f)
+        
         return jsonify(response_data), 200
-
+    
     except Exception as e:
         print(f"[API] Error in /results: {e}")
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/voxels/<job_id>", methods=["GET"])
 @require_api_key
-def get_voxels(job_id):
-    """voxel_data.npz 반환 — streamlit 3D 뷰어용"""
+def get_voxel_file(job_id):
+    """voxel_data.npz 바이너리 반환"""
+    if job_id not in JOBS:
+        return jsonify({"error": "Job not found"}), 404
     job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
     npz_path = os.path.join(job_dir, "voxel_data.npz")
-
-    # JOBS 메모리에 없어도 파일이 있으면 응답 (재시작 복구)
-    if job_id not in JOBS:
-        if not os.path.exists(npz_path):
-            return jsonify({"error": "Job not found"}), 404
-    else:
-        if JOBS[job_id]["status"] != "completed":
-            return jsonify({"error": f"Job not completed (status: {JOBS[job_id]['status']})"}), 400
-
     if not os.path.exists(npz_path):
-        return jsonify({"error": "voxel_data.npz not found — solver 버전을 확인하세요"}), 404
+        return jsonify({"error": "voxel_data.npz not found — solver may still be running"}), 404
+    return send_file(npz_path, mimetype="application/octet-stream",
+                     as_attachment=True, download_name="voxel_data.npz")
 
-    return send_file(
-        npz_path,
-        mimetype="application/octet-stream",
-        as_attachment=True,
-        download_name="voxel_data.npz"
-    )
+
+@app.route("/api/frames/<job_id>", methods=["GET"])
+@require_api_key
+def get_frames(job_id):
+    """
+    frames/ 디렉토리의 PNG 파일을 base64로 인코딩해 JSON으로 반환.
+    Streamlit 에서 st.image() 로 바로 표시 가능.
+
+    Response:
+    {
+      "job_id": "...",
+      "num_frames": 15,
+      "frames": ["data:image/png;base64,...", ...]   // 순서대로
+    }
+    """
+    if job_id not in JOBS:
+        return jsonify({"error": "Job not found"}), 404
+
+    job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
+    frames_dir = os.path.join(job_dir, "frames")
+
+    if not os.path.exists(frames_dir):
+        return jsonify({"error": "frames directory not found"}), 404
+
+    png_files = sorted([f for f in os.listdir(frames_dir) if f.endswith(".png")])
+    if not png_files:
+        return jsonify({"error": "No PNG frames found"}), 404
+
+    import base64 as _b64
+    frame_data = []
+    for fname in png_files:
+        fpath = os.path.join(frames_dir, fname)
+        with open(fpath, "rb") as fh:
+            b64 = _b64.b64encode(fh.read()).decode("utf-8")
+        frame_data.append(f"data:image/png;base64,{b64}")
+
+    return jsonify({
+        "job_id": job_id,
+        "num_frames": len(frame_data),
+        "frames": frame_data,
+    }), 200
+
 
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
 @require_api_key
