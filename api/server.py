@@ -36,6 +36,7 @@ except ImportError:
     print("[API] Warning: oci 패키지 미설치 — Object Storage 기능 비활성화")
 
 # Solver
+import subprocess
 from subprocess import run as subprocess_run
 import numpy as np
 
@@ -225,19 +226,45 @@ def run_solver(job_id, stl_path, params):
             "--screw_dia", str(params.get("screw_dia", 28.0)),
         ]
         
-        # 작업 디렉토리에서 실행
-        result = subprocess_run(
+        # 작업 디렉토리에서 실행 (Popen으로 실시간 진행률 추적)
+        process = subprocess.Popen(
             cmd,
             cwd=job_dir,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=CONFIG["SOLVER_TIMEOUT"]
         )
-        
-        if result.returncode != 0:
+
+        stderr_lines = []
+        deadline = time.time() + CONFIG["SOLVER_TIMEOUT"]
+
+        for line in process.stdout:
+            line = line.rstrip()
+            print(f"[Solver][{job_id}] {line}")
+
+            # "PROGRESS:50" 또는 "50%" 형태 파싱
+            import re
+            m = re.search(r"PROGRESS[:\s]+(\d+)", line, re.IGNORECASE)
+            if not m:
+                m = re.search(r"\b(\d{1,3})\s*%", line)
+            if m:
+                pct = min(int(m.group(1)), 99)
+                JOBS[job_id]["progress"] = pct
+
+            if time.time() > deadline:
+                process.kill()
+                JOBS[job_id]["status"] = "timeout"
+                JOBS[job_id]["error"] = f"Timeout after {CONFIG['SOLVER_TIMEOUT']}s"
+                print(f"[Solver] ⏱️ Timeout: {job_id}")
+                return
+
+        process.wait()
+        stderr_output = process.stderr.read()
+
+        if process.returncode != 0:
             JOBS[job_id]["status"] = "failed"
-            JOBS[job_id]["error"] = result.stderr
-            print(f"[Solver] ❌ Job failed: {result.stderr}")
+            JOBS[job_id]["error"] = stderr_output
+            print(f"[Solver] ❌ Job failed: {stderr_output}")
             return
         
         # 결과 처리
@@ -251,11 +278,12 @@ def run_solver(job_id, stl_path, params):
             if oracle_client.enabled:
                 oracle_client.upload_file(results_file, "results.json", job_id)
         
+        JOBS[job_id]["progress"] = 100
         JOBS[job_id]["status"] = "completed"
         JOBS[job_id]["end_time"] = datetime.now()
         print(f"[Solver] ✅ Job completed: {job_id}")
         
-    except subprocess_run.TimeoutExpired:
+    except subprocess.TimeoutExpired:
         JOBS[job_id]["status"] = "timeout"
         JOBS[job_id]["error"] = f"Timeout after {CONFIG['SOLVER_TIMEOUT']}s"
         print(f"[Solver] ⏱️ Timeout: {job_id}")
