@@ -44,8 +44,8 @@ services:
     
     command: python -m flask run --host=0.0.0.0 --port=5000
 
-    mem_limit: 16g
-    memswap_limit: 16g
+    mem_limit: 24g
+    memswap_limit: 24g
 
     networks:
       - mim-network
