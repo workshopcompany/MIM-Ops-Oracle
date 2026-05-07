@@ -439,8 +439,14 @@ def submit_simulation():
 @require_api_key
 def get_job_status(job_id):
     """작업 상태 조회"""
+    # 서버 재시작 후 메모리 유실 시 파일로 복구
     if job_id not in JOBS:
-        return jsonify({"error": "Job not found"}), 404
+        job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
+        results_path = os.path.join(job_dir, "results.json")
+        if os.path.exists(results_path):
+            JOBS[job_id] = {"status": "completed", "created_at": "", "log": [], "progress": 100}
+        else:
+            return jsonify({"error": "Job not found"}), 404
     
     job = JOBS[job_id]
     
@@ -473,27 +479,32 @@ def get_job_status(job_id):
 @require_api_key
 def get_results(job_id):
     """결과 다운로드"""
+    # JOBS 메모리에 없어도 파일이 있으면 복구해서 응답
+    job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
+    results_path = os.path.join(job_dir, "results.json")
+
     if job_id not in JOBS:
-        return jsonify({"error": "Job not found"}), 404
-    
+        # 서버 재시작 후 메모리 유실 → 파일로 복구
+        if os.path.exists(results_path):
+            JOBS[job_id] = {"status": "completed", "created_at": "", "log": []}
+        else:
+            return jsonify({"error": "Job not found"}), 404
+
     job = JOBS[job_id]
     if job["status"] != "completed":
         return jsonify({"error": f"Job status is {job['status']}",
                         "detail": job.get("error")}), 400
-    
+
     try:
-        job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
-        
         # 결과 파일들 수집
         result_files = []
         for filename in ["results.json", "results.txt", "voxel_data.npz"]:
             filepath = os.path.join(job_dir, filename)
             if os.path.exists(filepath):
                 result_files.append(filename)
-        
+
         # frames 디렉토리 압축
         frames_dir = os.path.join(job_dir, "frames")
-        frames_zip = None
         if os.path.exists(frames_dir):
             import zipfile
             frames_zip = os.path.join(job_dir, "frames.zip")
@@ -504,39 +515,47 @@ def get_results(job_id):
                         arcname = os.path.relpath(file_path, frames_dir)
                         zf.write(file_path, arcname)
             result_files.append("frames.zip")
-        
-        # 결과 구성
+
         response_data = {
             "job_id": job_id,
             "status": "completed",
             "completed_at": job.get("end_time", datetime.now()).isoformat(),
             "files": result_files,
         }
-        
-        # results.json 포함
-        results_path = os.path.join(job_dir, "results.json")
+
+        # results.json 포함 + streamlit KPI 키 별칭 추가
         if os.path.exists(results_path):
             with open(results_path) as f:
-                response_data["results"] = json.load(f)
-        
+                r = json.load(f)
+            response_data["results"] = r
+            # streamlit이 기대하는 키 별칭 (solver.py 키명과 다를 수 있음)
+            response_data["theo_fill_time"] = r.get("theo_fill_time", r.get("Theo Fill Time (s)"))
+            response_data["max_vel_mms"]    = r.get("max_vel_mms",    r.get("Injection Vel (mm/s)"))
+            response_data["num_voxels"]     = r.get("num_voxels",     r.get("Total Voxels"))
+            response_data["res_mm"]         = r.get("res_mm",         r.get("Mesh Res (mm)"))
+
         return jsonify(response_data), 200
-    
+
     except Exception as e:
         print(f"[API] Error in /results: {e}")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/api/voxels/<job_id>", methods=["GET"])
 @require_api_key
 def get_voxels(job_id):
-    """voxel_data.npz 반환 — streamlit 3D 뷰어가 이 엔드포인트를 호출합니다."""
+    """voxel_data.npz 반환 — streamlit 3D 뷰어용"""
+    job_dir = os.path.join(CONFIG["RESULTS_DIR"], job_id)
+    npz_path = os.path.join(job_dir, "voxel_data.npz")
+
+    # JOBS 메모리에 없어도 파일이 있으면 응답 (재시작 복구)
     if job_id not in JOBS:
-        return jsonify({"error": "Job not found"}), 404
+        if not os.path.exists(npz_path):
+            return jsonify({"error": "Job not found"}), 404
+    else:
+        if JOBS[job_id]["status"] != "completed":
+            return jsonify({"error": f"Job not completed (status: {JOBS[job_id]['status']})"}), 400
 
-    job = JOBS[job_id]
-    if job["status"] != "completed":
-        return jsonify({"error": f"Job not completed (status: {job['status']})"}), 400
-
-    npz_path = os.path.join(CONFIG["RESULTS_DIR"], job_id, "voxel_data.npz")
     if not os.path.exists(npz_path):
         return jsonify({"error": "voxel_data.npz not found — solver 버전을 확인하세요"}), 404
 
@@ -546,7 +565,6 @@ def get_voxels(job_id):
         as_attachment=True,
         download_name="voxel_data.npz"
     )
-
 
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
 @require_api_key
