@@ -130,45 +130,35 @@ def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
         fill_ratio = 0.3
 
     est_voxels = max(int(grid_total * fill_ratio), 1)
-    bytes_per_voxel = (12 + 4 + 100 + 80) * 3   # ~588 bytes (보수적 추정)
+    # solver.py 의 estimate_memory_gb() 와 동일한 보정 계수
+    # float32 최적화 4종 적용 후 실측 기반: ~102 bytes/voxel
+    bytes_per_voxel = int((12 + 4 + 32 + 20) * 1.5)  # 102 bytes
     est_ram_gb_val = (est_voxels * bytes_per_voxel) / (1024 ** 3)
     return est_voxels, est_ram_gb_val
 
 
 def render_ram_advisor(mesh):
     """
-    STL 로드 후 현재 해상도의 예상 RAM 및 권장 해상도 테이블을 표시.
+    해상도별 RAM 예측 테이블 + 권장 해상도 원클릭 적용 버튼.
+    (실시간 인라인 요약은 슬라이더 아래 st.caption으로 별도 표시)
     """
-    current_res = st.session_state.get("mesh_res_mm", 1.0)
-    est_v, est_ram = estimate_ram_gb(mesh, current_res)
-
-    # 색상 경고
-    if est_ram < 8:
-        ram_color = "🟢"
-    elif est_ram < 14:
-        ram_color = "🟡"
-    else:
-        ram_color = "🔴"
-
-    st.markdown(f"**{ram_color} 현재 해상도 {current_res:.1f}mm → 예상 RAM: `{est_ram:.1f} GB`  |  복셀 수: `{est_v:,}`**")
-
     # 해상도별 테이블
     rows = []
     for res_test in [0.3, 0.5, 0.8, 1.0, 1.5, 2.0]:
         _, ram_test = estimate_ram_gb(mesh, res_test)
         if ram_test <= 12:
-            status = "✅ 16GB 이하"
+            status = "✅ 16GB 이하 (안전)"
         elif ram_test <= 18:
-            status = "🟡 16~24GB"
+            status = "🟡 16~24GB (주의)"
         elif ram_test <= 22:
             status = "⚠️ 24GB 근접"
         else:
-            status = "❌ 24GB 초과"
+            status = "❌ 24GB 초과 (위험)"
         rows.append({"해상도 (mm)": res_test, "예상 RAM (GB)": f"{ram_test:.1f}", "상태": status})
 
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    # [버그 수정] 권장 해상도: 정밀한 쪽(0.3mm)부터 검사 → RAM 안에 드는 가장 정밀한 값
+    # 권장 해상도: 정밀한 쪽(0.3mm)부터 검사 → RAM 안에 드는 가장 정밀한 값
     rec_16, rec_24 = None, None
     for res_test in [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0]:
         _, r = estimate_ram_gb(mesh, res_test)
@@ -1035,6 +1025,22 @@ with tab1:
             help="0.5mm = 정밀 (메모리 많이 사용) / 1.0mm = 권장 / 2.0mm = 빠름"
         )
 
+        # ── [Issue #1] 해상도 슬라이더 바로 아래 인라인 RAM 예측 ──
+        if st.session_state.mesh:
+            _m = st.session_state.mesh
+            _res_cur = st.session_state.mesh_res_mm
+            _est_v, _est_ram = estimate_ram_gb(_m, _res_cur)
+            if _est_ram < 8:
+                _ram_icon, _ram_msg = "🟢", "안전"
+            elif _est_ram < 14:
+                _ram_icon, _ram_msg = "🟡", "주의 — 해상도를 높이는 것(값 크게) 권장"
+            else:
+                _ram_icon, _ram_msg = "🔴", "위험 — OOM 가능. 해상도를 높이세요"
+            st.caption(
+                f"{_ram_icon} **{_res_cur:.1f}mm** → 예상 RAM **{_est_ram:.1f} GB** "
+                f"| 복셀 수 **{_est_v:,}** | {_ram_msg}"
+            )
+
         st.divider()
         
         # API 연결 상태
@@ -1164,11 +1170,14 @@ with tab3:
                             st.code("\n".join(log_lines), language="text")
 
                     # RAM 부족 가능성 안내
-                    if any(kw in error_msg for kw in ["MemoryError", "OOM", "Killed", "killed", "memory"]):
+                    is_oom = any(kw in error_msg for kw in ["MemoryError", "OOM", "Killed", "killed", "memory", "code -9", "-9"])
+                    if is_oom:
                         st.warning(
-                            "💡 **RAM 부족 오류가 감지되었습니다.**\n\n"
-                            "Simulation 탭 → '💾 RAM 예측 및 해상도 추천'에서\n"
-                            "더 낮은 해상도(예: 1.0mm 또는 1.5mm)를 적용하고 다시 시도하세요."
+                            "💡 **RAM 부족 (OOM Killer) 오류가 감지되었습니다.**\n\n"
+                            "`exit code -9` = Linux 커널이 메모리 초과로 프로세스를 강제 종료한 것입니다.\n\n"
+                            "**해결 방법:** Simulation 탭 → 해상도 슬라이더를 올려 (숫자 크게, 예: 1.0mm → 1.5mm)\n"
+                            "슬라이더 아래 🟢 표시가 될 때까지 조정 후 재시도하세요.\n\n"
+                            "또는 '💾 RAM 예측 및 해상도 추천' expander에서 권장값 버튼을 클릭하세요."
                         )
                 else:
                     st.warning(f"⚠️ 상태: {current_status}")
