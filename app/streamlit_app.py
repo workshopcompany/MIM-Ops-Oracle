@@ -111,8 +111,11 @@ init_session_state()
 def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
     """
     주어진 해상도에서 예상 RAM(GB)과 복셀 수를 반환.
-    solver.py 의 estimate_memory_gb() 와 동일한 보정 계수 사용.
-    순수 배열(196 bytes) × 3배 Python 런타임 오버헤드 = ~588 bytes/voxel.
+    solver.py 의 estimate_memory_gb() 와 동일한 로직 사용.
+
+    ★ fill_ratio 제거: 얇은 판형 파트에서 실제 복셀의 1/50 수준으로 과소 추정되는
+      치명적 버그 수정. 바운딩박스 전체 복셀 수 기반 보수적 추정으로 변경.
+    ★ BYTES_PER_VOXEL=450: 실측 기반 (cKDTree ~150B + Dijkstra heap + 런타임 오버헤드)
     """
     bounds = mesh.bounds
     bb = bounds[1] - bounds[0]
@@ -120,20 +123,11 @@ def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
     grid_nx = int(np.ceil(bb[0] / res_mm))
     grid_ny = int(np.ceil(bb[1] / res_mm))
     grid_nz = int(np.ceil(bb[2] / res_mm))
-    grid_total = grid_nx * grid_ny * grid_nz
+    # fill_ratio 제거 — BB 전체 복셀 수로 보수적 추정
+    est_voxels = max(int(grid_nx) * int(grid_ny) * int(grid_nz), 1)
 
-    try:
-        vol = abs(float(mesh.volume))
-        bb_vol = float(bb[0] * bb[1] * bb[2])
-        fill_ratio = min(vol / bb_vol, 1.0) if bb_vol > 0 else 0.3
-    except Exception:
-        fill_ratio = 0.3
-
-    est_voxels = max(int(grid_total * fill_ratio), 1)
-    # solver.py 의 estimate_memory_gb() 와 동일한 보정 계수
-    # float32 최적화 4종 적용 후 실측 기반: ~102 bytes/voxel
-    bytes_per_voxel = int((12 + 4 + 32 + 20) * 1.5)  # 102 bytes
-    est_ram_gb_val = (est_voxels * bytes_per_voxel) / (1024 ** 3)
+    BYTES_PER_VOXEL = 210  # BFS 기준 실측값 (solver.py와 동일)
+    est_ram_gb_val = (est_voxels * BYTES_PER_VOXEL) / (1024 ** 3)
     return est_voxels, est_ram_gb_val
 
 
