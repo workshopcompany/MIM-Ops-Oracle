@@ -227,29 +227,31 @@ def run_solver(job_id, stl_path, params):
         ]
         
         # 작업 디렉토리에서 실행 (Popen으로 실시간 진행률 추적)
+        import re
+        
         process = subprocess.Popen(
             cmd,
             cwd=job_dir,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # stderr를 stdout으로 병합
             text=True,
+            bufsize=1  # 한 줄씩 버퍼링
         )
 
-        stderr_lines = []
         deadline = time.time() + CONFIG["SOLVER_TIMEOUT"]
 
         for line in process.stdout:
             line = line.rstrip()
-            print(f"[Solver][{job_id}] {line}")
+            if line:
+                print(f"[Solver][{job_id}] {line}")
 
-            # "PROGRESS:50" 또는 "50%" 형태 파싱
-            import re
-            m = re.search(r"PROGRESS[:\s]+(\d+)", line, re.IGNORECASE)
-            if not m:
-                m = re.search(r"\b(\d{1,3})\s*%", line)
-            if m:
-                pct = min(int(m.group(1)), 99)
-                JOBS[job_id]["progress"] = pct
+                # "PROGRESS:50" 또는 "50%" 형태 파싱
+                m = re.search(r"PROGRESS[:\s]+(\d+)", line, re.IGNORECASE)
+                if not m:
+                    m = re.search(r"\b(\d{1,3})\s*%", line)
+                if m:
+                    pct = min(int(m.group(1)), 99)
+                    JOBS[job_id]["progress"] = pct
 
             if time.time() > deadline:
                 process.kill()
@@ -259,12 +261,11 @@ def run_solver(job_id, stl_path, params):
                 return
 
         process.wait()
-        stderr_output = process.stderr.read()
 
         if process.returncode != 0:
             JOBS[job_id]["status"] = "failed"
-            JOBS[job_id]["error"] = stderr_output
-            print(f"[Solver] ❌ Job failed: {stderr_output}")
+            JOBS[job_id]["error"] = f"Solver exited with code {process.returncode}"
+            print(f"[Solver] ❌ Job failed with return code {process.returncode}")
             return
         
         # 결과 처리
