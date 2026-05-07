@@ -935,7 +935,16 @@ with tab1:
             min_value=0.1, max_value=5.0,
             value=st.session_state.etime, step=0.1
         )
-        
+
+        if "mesh_res_mm" not in st.session_state:
+            st.session_state.mesh_res_mm = 1.0
+        st.session_state.mesh_res_mm = st.slider(
+            "Voxel Resolution (mm) — 낮을수록 정밀하지만 느림",
+            min_value=0.3, max_value=3.0,
+            value=st.session_state.mesh_res_mm, step=0.1,
+            help="0.5mm = 정밀 (메모리 많이 사용) / 1.0mm = 권장 / 2.0mm = 빠름"
+        )
+
         st.divider()
         
         # API 연결 상태
@@ -961,7 +970,7 @@ with tab1:
                         "vel_mms": st.session_state.vel_mms,
                         "etime": st.session_state.etime,
                         "num_frames": 15,
-                        "mesh_res_mm": 0.5,
+                        "mesh_res_mm": st.session_state.get("mesh_res_mm", 1.0),
                     }
                     
                     result = submit_simulation(uploaded_file.getbuffer(), params)
