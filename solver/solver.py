@@ -249,18 +249,34 @@ def main():
     print(f"[Solver] Gate: ({args.gate_x}, {args.gate_y}, {args.gate_z}), dia={args.gate_dia}mm")
 
     # 1. Load & voxelise STL
+    print("[Solver] Loading STL mesh...")
     mesh = trimesh.load(args.stl_path)
     if isinstance(mesh, trimesh.Scene):
         mesh = trimesh.util.concatenate(
             [g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
         )
-    res = args.mesh_res_mm
-    voxel_grid = mesh.voxelized(res)
-    # fill() — 내부 볼륨까지 채움 (없으면 표면 shell만 복셀화됨)
-    voxel_grid = voxel_grid.fill()
+    print(f"[Solver] Mesh loaded: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
     
-    raw_coords = voxel_grid.points
-    print(f"[Solver] 기본 Voxels: {len(raw_coords)} at res={res}mm (solid fill)")
+    res = args.mesh_res_mm
+    print(f"[Solver] Starting voxelization at resolution {res}mm...")
+    
+    try:
+        # 안전한 voxelization — pitch 파라미터로 더 간단하게
+        voxel_grid = mesh.voxelized(pitch=res)
+        print(f"[Solver] Voxelization completed")
+        
+        # fill() — 내부 볼륨까지 채움 (없으면 표면 shell만 복셀화됨)
+        print("[Solver] Filling voxel grid...")
+        voxel_grid = voxel_grid.fill()
+        print("[Solver] Fill completed")
+        
+        raw_coords = voxel_grid.points
+        print(f"[Solver] 기본 Voxels: {len(raw_coords)} at res={res}mm (solid fill)")
+    except Exception as e:
+        print(f"[Solver] ❌ Voxelization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
     # ── [핵심 추가] STL 경계면 밖으로 삐져나온 격자 중심점 제거 (In-Out Check) ──
     print("[Solver] ✂️ STL 경계 기반 정밀 필터링 진행 중...")
@@ -335,8 +351,6 @@ def main():
             fill_pct=fill_pct,
             out_dir=frames_dir,
         )
-        progress_pct = int((f + 1) / num_frames * 100)
-        print(f"PROGRESS: {progress_pct}%")
         print(f"  Frame {f+1}/{num_frames} | Fill: {fill_pct:.1f}% | t={phys_label}")
 
     # 5. Save results
