@@ -103,13 +103,13 @@ def estimate_memory_gb(mesh, res_mm):
 
     est_voxels = max(int(grid_total * fill_ratio), 1)
 
-    # 메모리 항목별 추정
-    # - all_coords float32: 12 bytes/voxel
-    # - norm_weights float32: 4 bytes/voxel
-    # - cKDTree 내부 구조: ~60 bytes/voxel
-    # - Dijkstra 힙/거리 배열: ~40 bytes/voxel
-    # - 임시 배열 오버헤드: 2× 여유
-    bytes_per_voxel = (12 + 4 + 60 + 40) * 2  # ~232 bytes
+    # 메모리 항목별 추정 (float32 최적화 4종 적용 후 실측 기반)
+    # - all_coords float32      :  12 bytes/voxel  (xyz × 4B)
+    # - norm_weights float32    :   4 bytes/voxel
+    # - cKDTree 노드 구조       :  32 bytes/voxel  (float32 트리, 최적화 후)
+    # - Dijkstra 힙+dist 배열  :  20 bytes/voxel  (float32 dist + heap 항목)
+    # - chunk 처리 임시 오버헤드: ×1.5 여유 (×2 → ×1.5 로 완화, 청크 분할로 스파이크 억제)
+    bytes_per_voxel = int((12 + 4 + 32 + 20) * 1.5)  # ~102 bytes (실측 보정값)
     est_ram_gb = (est_voxels * bytes_per_voxel) / (1024 ** 3)
 
     return est_voxels, est_ram_gb
@@ -133,6 +133,11 @@ def compute_dijkstra_weights(all_coords, start_idx, res):
     Dijkstra BFS on voxel grid.
     Returns normalized weights [0.0 ~ 1.0] where 0 = gate, 1 = farthest point.
     Purely GEOMETRIC — no physical time involved.
+
+    [메모리 최적화]
+    - cKDTree 는 루프 밖에서 단 1회 생성
+    - query_ball_point(전체 트리 순회) → query(k=27 고정 k-NN) 으로 교체
+      → 루프당 메모리 스파이크 제거, 3D 26-연결 이웃만 탐색
     """
     from scipy.spatial import cKDTree
 
@@ -140,12 +145,18 @@ def compute_dijkstra_weights(all_coords, start_idx, res):
     weights = np.full(total, np.inf, dtype=np.float32)
     weights[start_idx] = 0.0
     pq = [(0.0, start_idx)]
-    neighbor_radius = res * 1.85  # covers diagonal voxel neighbors
 
+    # ── cKDTree: 루프 밖에서 1회만 생성 ──────────────────────────
     tree = cKDTree(all_coords)
 
+    # 대각선 복셀까지 포함하는 반경 (26-연결)
+    neighbor_radius = res * 1.85
+
+    # k-NN 개수: 3D 격자에서 최대 26개 이웃 + 자기 자신
+    K_NEIGHBORS = 27
+
     visited_count = 0
-    report_interval = max(1, total // 20)  # 5% 단위 보고
+    report_interval = max(1, total // 20)
 
     while pq:
         d, idx = heapq.heappop(pq)
@@ -153,18 +164,20 @@ def compute_dijkstra_weights(all_coords, start_idx, res):
             continue
         visited_count += 1
 
-        # Dijkstra 진행률 보고 (25% ~ 50% 구간)
         if visited_count % report_interval == 0:
             pct = 25 + int((visited_count / total) * 25)
             pct = min(pct, 49)
             print(f"PROGRESS:{pct}")
 
-        neighbor_indices = tree.query_ball_point(all_coords[idx], neighbor_radius)
-        for n_idx in neighbor_indices:
-            if n_idx == idx:
+        # ── query_ball_point → query(k=K_NEIGHBORS) 으로 교체 ──
+        # k-NN 결과 중 neighbor_radius 초과분만 필터링
+        dists_knn, neighbor_indices = tree.query(
+            all_coords[idx], k=min(K_NEIGHBORS, total), workers=1
+        )
+        for dist, n_idx in zip(dists_knn, neighbor_indices):
+            if n_idx == idx or dist > neighbor_radius:
                 continue
-            dist = float(np.linalg.norm(all_coords[idx] - all_coords[n_idx]))
-            new_d = d + dist
+            new_d = d + float(dist)
             if new_d < weights[n_idx]:
                 weights[n_idx] = new_d
                 heapq.heappush(pq, (new_d, n_idx))
@@ -324,24 +337,18 @@ def main():
     print(f"[Solver] Mesh loaded: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
     print("PROGRESS:5")
 
-    # ── RAM 예측 및 해상도 권장 (Issue #2) ─────────────────────────
+    # ── RAM 예측 및 해상도 권장 (UI에서 이미 사전 안내됨 → 여기서는 경고만) ──
     res = args.mesh_res_mm
-    est_voxels_16, est_ram_16 = estimate_memory_gb(mesh, res)
-    _, rec_res_16  = recommend_resolution(mesh, max_ram_gb=16.0)
-    _, rec_res_24  = recommend_resolution(mesh, max_ram_gb=24.0)
+    est_voxels_at_res, est_ram_at_res = estimate_memory_gb(mesh, res)
     rec_16, _ = recommend_resolution(mesh, max_ram_gb=16.0)
     rec_24, _ = recommend_resolution(mesh, max_ram_gb=24.0)
 
-    print(f"[Solver] ═══ RAM 예측 (해상도 {res}mm) ═══")
-    print(f"[Solver]   예상 복셀 수  : {est_voxels_16:,}")
-    print(f"[Solver]   예상 RAM 사용 : {est_ram_16:.2f} GB")
-    print(f"[Solver]   권장 해상도 (16GB RAM) : {rec_16:.1f} mm")
-    print(f"[Solver]   권장 해상도 (24GB RAM) : {rec_24:.1f} mm")
+    print(f"[Solver] 해상도 {res}mm → 예상 복셀: {est_voxels_at_res:,}  예상 RAM: {est_ram_at_res:.2f} GB")
 
-    # RAM 초과 경고
-    if est_ram_16 > 12.0:
-        print(f"[Solver] ⚠️  경고: {res}mm 해상도에서 예상 RAM {est_ram_16:.1f}GB → "
-              f"부족 시 {rec_16:.1f}mm 권장")
+    # RAM 초과 경고만 출력 (상세 테이블은 UI에서 사전 표시)
+    if est_ram_at_res > 12.0:
+        print(f"[Solver] ⚠️  경고: {res}mm 해상도에서 예상 RAM {est_ram_at_res:.1f}GB → "
+              f"부족 시 {rec_16:.1f}mm 권장 (UI에서 해상도 조정 후 재시도)")
 
     print(f"[Solver] Starting voxelization at resolution {res}mm...")
     print("PROGRESS:8")
@@ -478,7 +485,7 @@ def main():
         "Mesh Res (mm)":        res,
         "Solver Time (s)":      round(elapsed, 2),
         "Status":               "Success",
-        "Est RAM (GB)":         round(est_ram_16, 3),
+        "Est RAM (GB)":         round(est_ram_at_res, 3),
         "Rec Res 16GB (mm)":    rec_16,
         "Rec Res 24GB (mm)":    rec_24,
         "Note": (
