@@ -1,24 +1,26 @@
 # ═══════════════════════════════════════════════
 # MIM-Ops Pro Requirements
+#
+# 변경사항:
+#   - vtk, pyvista 제거 (3D 시각화를 Three.js WebGL로 완전 교체됨)
 # ═══════════════════════════════════════════════
 
 # Core
 python-dotenv==1.0.0
 
 # Streamlit (UI)
-streamlit==1.28.1
+streamlit==1.40.2
 streamlit-lottie==0.0.5
 
 # Data Processing & Visualization
-numpy==1.24.3
-scipy==1.11.2
+numpy==1.26.4
+scipy==1.11.4
 pandas==2.0.3
 trimesh==3.21.7
 plotly==5.17.0
-pyvista==0.41.1
 
 # Plotting
-matplotlib==3.7.2
+matplotlib==3.8.4
 
 # API Server (Flask)
 flask==2.3.3
@@ -28,9 +30,6 @@ requests==2.31.0
 # Oracle Cloud SDK
 oci==2.119.0
 python-dateutil==2.8.2
-
-# VTK (3D visualization)
-vtk==9.2.6
 
 # Additional
 python-multipart==0.0.6
