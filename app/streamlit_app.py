@@ -42,7 +42,7 @@ def _get_secret(key: str, default: str = "") -> str:
     except (KeyError, FileNotFoundError, Exception):
         return default
 
-ORACLE_API_URL = _get_secret("ORACLE_API_URL", "http://localhost:5000")
+ORACLE_API_URL = _get_secret("ORACLE_API_URL", "http://132.145.187.95:5000")
 ORACLE_API_KEY = _get_secret("API_KEY", "default-key")
 GEMINI_API_KEY = _get_secret("GEMINI_API_KEY", "")
 
