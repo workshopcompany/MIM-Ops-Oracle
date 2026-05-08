@@ -1,0 +1,51 @@
+Docker 사용하여 내 pc에서 실행하기
+C:\Users\lg\MIM-Ops-Oracle
+위치에서 
+cmd or powershell
+
+컨테이너 중지 및 제거:
+docker-compose down
+컨테이너 다시 시작:
+docker-compose up -d
+설치 과정 확인 (설치에 시간이 걸릴 수 있습니다):
+docker-compose logs -f streamlit
+
+
+설치중 막힐때 (그냥 이렇게 하는게 젤 결과가 좋음)
+powershell
+cd C:\Users\lg\MIM-Ops-Oracle
+docker-compose down -v
+docker-compose up -d
+
+docker-compose logs -f streamlit
+
+파일 수정 후 적용 방법
+Docker 사용 중이면:
+bash
+
+docker-compose down
+docker-compose up --build
+
+cache 문제있을경우(아래 코드로 하면 시간이 더 걸림..ㅠ)
+
+docker-compose down
+docker-compose build --no-cache
+docker-compose up
+
+또는
+docker-compose down && docker-compose build --no-cache && docker-compose up
+
+
+로그확인하기
+ docker logs -f mim-ops-api
+
+또는 단순 Python 직접 실행 중이면:
+bash
+# 기존 프로세스 종료 (Ctrl+C)
+# 그 다음 재시작
+python server.py
+또는 자동 리로드 (개발용):
+bash
+flask run --reload
+# 또는
+python -m flask run --reload
