@@ -42,14 +42,16 @@ st.markdown("**Metal Injection Molding (MIM) Flow Simulation Platform**")
 # ═══════════════════════════════════════════════════════════
 
 # Secrets 로드
-try:
-    ORACLE_API_URL = st.secrets.get("ORACLE_API_URL", "http://localhost:5000")
-    ORACLE_API_KEY = st.secrets.get("API_KEY", "default-key")
-    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-except:
-    ORACLE_API_URL = "http://localhost:5000"
-    ORACLE_API_KEY = "default-key"
-    GEMINI_API_KEY = ""
+def _get_secret(key: str, default: str = "") -> str:
+    """st.secrets 에서 값을 안전하게 읽어 반환. 없으면 default."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError, Exception):
+        return default
+
+ORACLE_API_URL = _get_secret("ORACLE_API_URL", "http://localhost:5000")
+ORACLE_API_KEY = _get_secret("API_KEY", "default-key")
+GEMINI_API_KEY = _get_secret("GEMINI_API_KEY", "")
 
 # 재료 DB 파일 경로
 MATERIAL_FILE = os.path.join(os.path.dirname(__file__), "material_property.txt")
@@ -78,8 +80,15 @@ def init_session_state():
         st.session_state.gate_y = 0.0
     if "gate_z" not in st.session_state:
         st.session_state.gate_z = 0.0
+    # ── 게이트 크기/형상 (신규) ──────────────────────────────
     if "gate_dia" not in st.session_state:
-        st.session_state.gate_dia = 2.0
+        st.session_state.gate_dia = 2.0          # 원형 지름 (mm)
+    if "gate_shape" not in st.session_state:
+        st.session_state.gate_shape = "circular" # "circular" | "rectangular"
+    if "gate_width" not in st.session_state:
+        st.session_state.gate_width  = 3.0       # 직사각형 가로 (mm)
+    if "gate_height" not in st.session_state:
+        st.session_state.gate_height = 2.0       # 직사각형 세로 (mm)
     
     if "temp" not in st.session_state:
         st.session_state.temp = 230.0
@@ -138,7 +147,7 @@ def render_ram_advisor(mesh):
     """
     # 해상도별 테이블
     rows = []
-    for res_test in [0.3, 0.5, 0.8, 1.0, 1.5, 2.0]:
+    for res_test in [0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]:
         _, ram_test = estimate_ram_gb(mesh, res_test)
         if ram_test <= 12:
             status = "✅ 16GB 이하 (안전)"
@@ -154,7 +163,7 @@ def render_ram_advisor(mesh):
 
     # 권장 해상도: 정밀한 쪽(0.3mm)부터 검사 → RAM 안에 드는 가장 정밀한 값
     rec_16, rec_24 = None, None
-    for res_test in [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0]:
+    for res_test in [0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0]:
         _, r = estimate_ram_gb(mesh, res_test)
         if r <= 16 * 0.75 and rec_16 is None:
             rec_16 = res_test
@@ -408,7 +417,7 @@ button:hover {{ background:#4b5563; }}
 <body>
 <div id="wrap">
   <canvas id="c"></canvas>
-  <div id="hud">드래그: 회전 &nbsp;|&nbsp; 스크롤: 줌 &nbsp;|&nbsp; Shift+드래그: 이동</div>
+  <div id="hud">좌클릭: 회전 &nbsp;|&nbsp; 우클릭·중간버튼: 이동 &nbsp;|&nbsp; Shift+드래그: 이동 &nbsp;|&nbsp; 스크롤: 줌</div>
   <div id="legend">
     <span style="color:#7ec8e3">■</span> Part &nbsp;
     {'<span style="color:#ff4444">●</span> Gate' if has_gate else ''}
@@ -581,26 +590,30 @@ function drawAxis(o, a, color, label) {{
 }}
 
 // ── Mouse / Touch controls ─────────────────────────────
-let dragging = false, lastX = 0, lastY = 0, shiftDown = false;
+// 좌클릭: 회전 | 우클릭/중간버튼: 이동 | Shift+좌클릭: 이동
+let dragging = false, panDragging = false;
+let lastX = 0, lastY = 0;
 
+canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('mousedown', e => {{
-  dragging = true; lastX = e.clientX; lastY = e.clientY;
-  shiftDown = e.shiftKey;
+  lastX = e.clientX; lastY = e.clientY;
+  if (e.button === 2 || e.button === 1) {{ panDragging = true; }}
+  else {{ dragging = true; }}
 }});
-window.addEventListener('mouseup', () => dragging = false);
+window.addEventListener('mouseup', () => {{ dragging = false; panDragging = false; }});
 window.addEventListener('mousemove', e => {{
-  if (!dragging) return;
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
   lastX = e.clientX; lastY = e.clientY;
-  if (e.shiftKey) {{
+  if (panDragging || (dragging && e.shiftKey)) {{
     panX += dx; panY += dy;
-  }} else {{
+    draw();
+  }} else if (dragging) {{
     rotY += dx * 0.012;
     rotX += dy * 0.012;
     rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+    draw();
   }}
-  draw();
 }});
 canvas.addEventListener('wheel', e => {{
   e.preventDefault();
@@ -711,6 +724,97 @@ def suggest_gate_positions(mesh: trimesh.Trimesh) -> list:
     
     return suggestions
 
+def calc_gate_size_recommendation(mesh: trimesh.Trimesh, material: str) -> dict:
+    """
+    게이트 크기 자동 추천 (플라스틱 사출 / MIM 공식 기반).
+
+    ── 플라스틱 사출성형 (Plastic IM) ─────────────────────────
+    Plastics Technology 실무 공식:
+      W  = 0.9 × √(A_surface_mm²) / 30          [mm]  게이트 폭
+      t  = 0.5 × t_wall                          [mm]  게이트 두께
+      단면적 기반 원형 직경: d = 2 × √(W×t / π)
+
+    ── 분말사출성형 / MIM ─────────────────────────────────────
+    MPIF / German (Powder Injection Molding) 가이드라인:
+      t  = 0.60 × t_wall   (피딩스탁 점도↑ → 플라스틱보다 두텁게)
+      W  = 2.0  × t        (폭 = 두께의 2배, 권장 범위 1.5~3×)
+      d  = 2 × √(W×t / π) [원형 환산]
+      최소치: t_min = 0.5 mm, W_min = 1.0 mm
+
+    ── 전단율(Shear Rate) 검증 ─────────────────────────────────
+    Q  = V_part / t_fill   [mm³/s],  t_fill ≈ 1 s
+    γ̇_rect = 6Q / (W × t²)     [1/s]  직사각형 게이트
+    γ̇_circ = 32Q / (π × d³)   [1/s]  원형 게이트
+    임계: 플라스틱 < 40,000/s,  MIM < 10,000/s
+    """
+    try:
+        bounds   = mesh.bounds
+        dims     = bounds[1] - bounds[0]          # [Lx, Ly, Lz] mm
+        vol_mm3  = max(abs(float(mesh.volume)), 1.0)
+
+        # 표면적 (mm²) — trimesh가 제공
+        try:
+            surf_mm2 = float(mesh.area)
+        except Exception:
+            # fallback: 2×(LxLy + LyLz + LzLx)
+            surf_mm2 = 2.0 * (dims[0]*dims[1] + dims[1]*dims[2] + dims[2]*dims[0])
+
+        # 최소 벽 두께 추정: Bounding-box 최단 치수의 절반 (경험값)
+        t_wall = float(np.sort(dims)[0]) * 0.5
+        t_wall = max(t_wall, 0.3)   # 최소 0.3 mm
+
+        # 공정 구분: 재료명에 CATAMOLD / WAXBASE / MIM 포함 → MIM
+        mat_upper = material.upper()
+        is_mim = any(kw in mat_upper for kw in ["CATAMOLD", "WAXBASE", "MIM", "METAL", "SS", "316", "304"])
+
+        # ── 공식 계산 ─────────────────────────────────────────
+        if is_mim:
+            process_label = "MIM (분말사출성형)"
+            t_gate = round(max(0.6 * t_wall, 0.5), 2)
+            w_gate = round(max(2.0 * t_gate,  1.0), 2)
+            formula_t = "t = 0.60 × t_wall (MPIF/German 가이드라인)"
+            formula_w = "W = 2.0 × t  (폭:두께 = 2:1)"
+            shear_limit = 10000
+        else:
+            process_label = "플라스틱 사출성형"
+            t_gate = round(max(0.5 * t_wall, 0.4), 2)
+            w_gate = round(max(0.9 * np.sqrt(surf_mm2) / 30.0, t_gate * 1.5), 2)
+            formula_t = "t = 0.50 × t_wall (Fattori, Plastics Technology)"
+            formula_w = "W = 0.9 × √A_surface / 30  (단위: mm)"
+            shear_limit = 40000
+
+        # 원형 환산 직경
+        d_gate = round(2.0 * np.sqrt(w_gate * t_gate / np.pi), 2)
+        d_gate = max(d_gate, 0.5)
+
+        # 전단율 검증 (t_fill ≈ 1 s 기본)
+        Q_mm3s  = vol_mm3 / 1.0
+        sr_rect = 6.0 * Q_mm3s / max(w_gate * t_gate**2, 1e-6)
+        sr_circ = 32.0 * Q_mm3s / max(np.pi * d_gate**3, 1e-6)
+        warn_rect = sr_rect > shear_limit
+        warn_circ = sr_circ > shear_limit
+
+        return {
+            "process":       process_label,
+            "is_mim":        is_mim,
+            "t_wall_est":    round(t_wall, 2),
+            "t_gate":        t_gate,
+            "w_gate":        w_gate,
+            "d_gate":        d_gate,
+            "formula_t":     formula_t,
+            "formula_w":     formula_w,
+            "shear_rect":    int(sr_rect),
+            "shear_circ":    int(sr_circ),
+            "shear_limit":   shear_limit,
+            "warn_rect":     warn_rect,
+            "warn_circ":     warn_circ,
+            "vol_mm3":       round(vol_mm3, 1),
+            "surf_mm2":      round(surf_mm2, 1),
+        }
+    except Exception as e:
+        return {"error": str(e), "d_gate": 2.0, "w_gate": 3.0, "t_gate": 1.5, "is_mim": True}
+
+
 def get_ai_gate_advice(mesh: trimesh.Trimesh, material_name: str):
     """Gemini AI를 사용한 게이트 위치 조언"""
     if not GEMINI_API_KEY:
@@ -769,16 +873,26 @@ def get_ai_gate_advice(mesh: trimesh.Trimesh, material_name: str):
 # Oracle Cloud API 함수들
 # ═══════════════════════════════════════════════════════════
 
-def check_api_connection():
-    """Oracle Cloud API 연결 확인"""
+@st.cache_data(ttl=30, show_spinner=False)
+def check_api_connection(api_url: str = None) -> tuple[bool, str]:
+    """
+    Oracle Cloud API 연결 확인.
+    반환: (success: bool, message: str)
+    결과를 30초간 캐싱하여 매 렌더링마다 HTTP 요청하지 않음.
+    """
+    url = api_url or ORACLE_API_URL
     try:
-        response = requests.get(
-            f"{ORACLE_API_URL}/health",
-            timeout=5
-        )
-        return response.status_code == 200
-    except:
-        return False
+        response = requests.get(f"{url}/health", timeout=5)
+        if response.status_code == 200:
+            return True, "연결됨"
+        else:
+            return False, f"HTTP {response.status_code}"
+    except requests.exceptions.ConnectionError:
+        return False, f"서버에 연결할 수 없습니다 ({url})"
+    except requests.exceptions.Timeout:
+        return False, "연결 시간 초과 (5s)"
+    except Exception as e:
+        return False, str(e)
 
 def submit_simulation(stl_file_bytes: bytes, params: dict) -> dict:
     """시뮬레이션 요청 제출"""
@@ -924,6 +1038,983 @@ def get_voxel_data(job_id: str):
         return None, None
 
 
+def build_webgl_flow_viewer(
+    coords: np.ndarray,
+    weights: np.ndarray,
+    mesh_trimesh=None,
+    num_frames: int = 15,
+    max_voxels: int = 40000,
+    gate_dia_mm: float = None,     # ★ 게이트 실제 직경(mm) — None이면 자동 추정
+    gate_width_mm: float = None,   # ★ 직사각형 게이트 가로(mm)
+    gate_height_mm: float = None,  # ★ 직사각형 게이트 세로(mm)
+) -> str:
+    """
+    Three.js WebGL 기반 3D 인터랙티브 유동 충진 뷰어.
+
+    - STL solid mesh → 반투명 wireframe 오버레이 (3D 형상 윤곽)
+    - voxel_data.npz coords + weights → 프레임별 충진 큐브(InstancedMesh)
+    - alpha.water(Dijkstra 가중치) 로 색상 매핑 (gate=파랑 → front=노랑)
+    - OrbitControls: 드래그 회전, 핀치줌, 이동
+    - 프레임 슬라이더 + ▶/⏸ 재생 + 속도 조절 + Auto Rotate
+    - 충진률 / 물리시간 HUD
+    """
+    import json as _json
+
+    N = len(coords)
+    if N == 0:
+        return "<p>복셀 데이터 없음</p>"
+
+    # ── 공통 정규화 기준: coords 전체 bbox ─────────────────
+    c_min  = coords.min(axis=0)
+    c_max  = coords.max(axis=0)
+    scale  = float(np.maximum(c_max - c_min, 1e-6).max())
+    center = (c_min + c_max) / 2.0
+
+    def normalize(pts):
+        return ((pts - center) / scale * 2.0).astype(np.float32)
+
+    # ── 복셀 다운샘플 ───────────────────────────────────────
+    if N > max_voxels:
+        # 가중치 균등 분포 샘플링 (low-w/high-w 비율 유지)
+        idx = np.linspace(0, N - 1, max_voxels, dtype=int)
+        coords_s  = coords[idx]
+        weights_s = weights[idx]
+    else:
+        coords_s  = coords
+        weights_s = weights
+
+    # ── ★ Fix 1: CPU 마스크 — 3D 형상 내부 복셀만 유지 ─────────────
+    # trimesh.contains() 로 mesh 외부 복셀을 Python 단에서 완전 제거.
+    # BackSide 색칠 방식보다 훨씬 정확하며 모든 시점에서 100% 투명.
+    # watertight 아닌 mesh 에서 실패해도 안전하게 fallback.
+    if mesh_trimesh is not None:
+        try:
+            inside_mask = mesh_trimesh.contains(coords_s)
+            n_inside = int(inside_mask.sum())
+            if n_inside >= 50:          # 너무 적게 남으면 필터 무시 (열린 mesh 오류 방지)
+                coords_s  = coords_s[inside_mask]
+                weights_s = weights_s[inside_mask]
+        except Exception:
+            pass                        # 실패 시 전체 복셀 유지 (안전 fallback)
+
+    coords_n = normalize(coords_s)   # (M, 3) in [-1,1]
+
+    # ── voxel_size 추정 (정규화 후 스케일) ──────────────────
+    # solver에서 res_mm 단위로 격자화됨; 정규화 후 상대 크기
+    res_mm_est = float(scale) / max(coords_n.shape[0] ** (1/3), 1)
+    voxel_size_n = float(2.0 / (scale / max((c_max - c_min).max(), 1e-6)))
+    # 실질적으로는 2/N^(1/3) 정도가 적당
+    voxel_size_n = min(0.06, max(0.008, 2.0 / (N ** (1/3))))
+
+    # ── 게이트 크기 정규화 ──────────────────────────────────────
+    # scale = 실제 최대 치수(mm) → 정규화 공간 [-1,1] 에서의 비율 계산
+    # 정규화 후 크기 = (실제 mm) / scale * 2.0
+    if gate_dia_mm is not None:
+        gate_r_n   = float(gate_dia_mm / scale)          # 반경(정규화)
+        gate_w_n   = gate_r_n * 2.0
+        gate_h_n   = gate_r_n * 2.0
+        gate_shape_js = "circular"
+    elif gate_width_mm is not None and gate_height_mm is not None:
+        gate_w_n   = float(gate_width_mm  / scale * 2.0)
+        gate_h_n   = float(gate_height_mm / scale * 2.0)
+        gate_r_n   = float(np.sqrt(gate_width_mm * gate_height_mm / np.pi) / scale)
+        gate_shape_js = "rectangular"
+    else:
+        # fallback: voxel 크기 기준 자동 (기존 VSIZE*2.5 대체)
+        gate_r_n   = voxel_size_n * 1.2
+        gate_w_n   = gate_r_n * 2.0
+        gate_h_n   = gate_r_n * 2.0
+        gate_shape_js = "circular"
+    gate_r_n  = max(gate_r_n,  voxel_size_n * 0.5)   # 최소 voxel 절반 이상
+
+    # ── JS용 flat arrays (Float32) ──────────────────────────
+    # xyzw: [x,y,z,w, x,y,z,w, ...] flat
+    M = len(coords_n)
+    xyzw_flat = np.column_stack([coords_n, weights_s]).astype(np.float32)
+    # base64 전송 (JSON보다 4~5× 작음)
+    xyzw_b64 = base64.b64encode(xyzw_flat.tobytes()).decode()
+
+    # ── STL mesh → wireframe edges JSON ─────────────────────
+    mesh_wire_json = "null"
+    mesh_faces_json = "null"
+    if mesh_trimesh is not None:
+        try:
+            verts_n = normalize(np.array(mesh_trimesh.vertices, dtype=np.float32))
+            faces   = np.array(mesh_trimesh.faces, dtype=np.int32)
+
+            # 다운샘플 faces if too many
+            MAX_FACES = 12000
+            if len(faces) > MAX_FACES:
+                idx_f = np.random.choice(len(faces), MAX_FACES, replace=False)
+                faces = faces[idx_f]
+
+            # wire: unique edges
+            edges = set()
+            for f in faces:
+                for i in range(3):
+                    e = tuple(sorted([int(f[i]), int(f[(i+1)%3])]))
+                    edges.add(e)
+            edge_list = list(edges)
+            # flat: [x0,y0,z0, x1,y1,z1, ...]
+            wire_pts = []
+            for e in edge_list:
+                v0 = verts_n[e[0]].tolist()
+                v1 = verts_n[e[1]].tolist()
+                wire_pts.extend(v0)
+                wire_pts.extend(v1)
+            mesh_wire_json = _json.dumps([round(v, 4) for v in wire_pts])
+
+            # solid faces for transparent shell
+            face_pts = []
+            for f in faces:
+                for vi in f:
+                    face_pts.extend(verts_n[vi].tolist())
+            mesh_faces_json = _json.dumps([round(v, 4) for v in face_pts])
+        except Exception as ex:
+            pass  # mesh 없어도 voxel만 표시
+
+    nf = num_frames
+    thr_list = [round(float(t), 4) for t in np.linspace(0, 1, nf + 1)[1:]]
+    thr_json = _json.dumps(thr_list)
+    vs = round(float(voxel_size_n), 5)
+    # gate JS 변수
+    js_gate_r = round(gate_r_n, 5)
+    js_gate_w = round(gate_w_n, 5)
+    js_gate_h = round(gate_h_n, 5)
+    js_gate_shape = gate_shape_js
+
+    html = f"""<!DOCTYPE html>
+<html style="margin:0;padding:0;height:100%;">
+<head>
+<meta charset="utf-8">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#07101f;overflow:hidden;font-family:'Courier New',monospace;color:#8ecfff;height:100vh;display:flex;flex-direction:column}}
+#container{{flex:1;display:flex;flex-direction:row;min-height:0}}
+/* 왼쪽: XYZ 기즈모 패널 (1/16) */
+#gizmoPanel{{
+  width:6.25%;min-width:70px;max-width:90px;
+  background:rgba(2,8,20,.95);border-right:1px solid #1a3a5c;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  flex-shrink:0;gap:6px;padding:8px 4px;
+}}
+#gizmoPanel .glbl{{font-size:9px;color:#3a6a8a;text-align:center;line-height:1.4}}
+#gizmoCvs{{border:1px solid #1e4060;border-radius:6px;background:rgba(0,6,18,.80)}}
+/* 오른쪽: 3D 뷰어 (15/16) */
+#viewport{{flex:1;position:relative;min-width:0;min-height:0}}
+#viewport canvas{{display:block;width:100%!important;height:100%!important}}
+
+/* HUD */
+#hud{{position:absolute;top:10px;left:12px;font-size:11px;
+      background:rgba(0,8,24,.78);border:1px solid #1a3a5c;
+      border-radius:6px;padding:7px 13px;line-height:1.8;
+      pointer-events:none;min-width:185px;z-index:10}}
+#hud .val{{color:#4df0c0;font-weight:bold}}
+#hud .lbl{{color:#4a6e88}}
+
+/* legend */
+#legend{{position:absolute;top:10px;left:210px;font-size:10px;
+         background:rgba(0,8,24,.78);border:1px solid #1a3a5c;
+         border-radius:6px;padding:6px 10px;z-index:10;pointer-events:none}}
+#cbar{{width:12px;height:80px;background:linear-gradient(to bottom,#ffe566,#00e5ff,#0d6efd);
+       display:inline-block;vertical-align:middle;border-radius:3px;margin-right:6px}}
+
+/* ── RIGHT CONTROL PANEL ────────────────────────── */
+#rpanel{{
+  position:absolute;top:10px;right:10px;z-index:20;
+  background:rgba(2,8,22,.92);border:1px solid #1e3a5c;
+  border-radius:8px;padding:10px 12px;width:220px;
+  font-family:'Courier New',monospace;
+  box-shadow:0 2px 16px rgba(0,0,0,.6);
+}}
+#rpanel.collapsed #rpbody{{display:none}}
+#rphead{{display:flex;justify-content:space-between;align-items:center;
+         cursor:pointer;margin-bottom:8px;}}
+#rphead span{{font-size:11px;color:#4df0c0;font-weight:bold;letter-spacing:.5px}}
+#rptoggle{{font-size:13px;color:#3a6a8a}}
+.rrow{{display:flex;align-items:center;justify-content:space-between;
+       margin-bottom:7px;gap:4px}}
+.rlbl{{font-size:10px;color:#3a6a8a;white-space:nowrap;min-width:78px}}
+.rval{{font-size:10px;color:#4df0c0;min-width:32px;text-align:right}}
+.rslider{{flex:1;accent-color:#4df0c0;cursor:pointer;height:3px}}
+.rsel{{flex:1;background:#0d1e35;border:1px solid #1e3a5c;color:#c8e0ff;
+       font-size:10px;border-radius:4px;padding:2px 4px;cursor:pointer}}
+.rdiv{{border:none;border-top:1px solid #1a3050;margin:7px 0}}
+.rtitle{{font-size:9px;color:#2a5070;text-transform:uppercase;
+         letter-spacing:1px;margin-bottom:5px}}
+
+/* CONTROLS */
+#ctrl{{background:rgba(4,10,24,.95);border-top:1px solid #1a3a5c;
+       padding:9px 14px;display:flex;flex-direction:column;gap:7px;z-index:10}}
+.crow{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+.btn{{background:rgba(13,110,253,.13);border:1px solid #1a3a5c;color:#8ecfff;
+      border-radius:5px;padding:3px 11px;cursor:pointer;font-size:12px;
+      transition:background .15s,border-color .15s;white-space:nowrap}}
+.btn:hover{{background:rgba(77,240,192,.18);border-color:#4df0c0;color:#4df0c0}}
+.btn.on{{background:rgba(77,240,192,.25);border-color:#4df0c0;color:#4df0c0}}
+#progwrap{{flex:1;min-width:120px;height:18px;position:relative;cursor:pointer}}
+#progbg{{position:absolute;top:50%;transform:translateY(-50%);
+         width:100%;height:4px;background:#1a3a5c;border-radius:2px}}
+#progfill{{position:absolute;top:50%;transform:translateY(-50%);
+           height:4px;width:0%;background:linear-gradient(90deg,#0d6efd,#4df0c0);
+           border-radius:2px}}
+#progthumb{{position:absolute;top:50%;left:0%;transform:translate(-50%,-50%);
+            width:14px;height:14px;background:#4df0c0;border-radius:50%;
+            box-shadow:0 0 6px #4df0c0;cursor:grab}}
+#fc{{font-size:11px;color:#4df0c0;min-width:55px;text-align:right}}
+#spdlbl{{color:#4df0c0;font-size:11px}}
+input[type=range]{{accent-color:#4df0c0;cursor:pointer}}
+</style>
+</head>
+<body>
+<div id="container">
+  <!-- ★ 왼쪽: XYZ 기즈모 패널 (1/16) -->
+  <div id="gizmoPanel">
+    <div class="glbl">XYZ<br>Axis</div>
+    <canvas id="gizmoCvs" width="72" height="72"></canvas>
+    <div class="glbl" style="font-size:8px;color:#1e4060;margin-top:4px">
+      <span style="color:#ff5555">■</span> X<br>
+      <span style="color:#55ff55">■</span> Y<br>
+      <span style="color:#5599ff">■</span> Z
+    </div>
+  </div>
+  <!-- ★ 오른쪽: 3D 뷰어 (15/16) -->
+  <div id="viewport">
+  <div id="hud">
+    <div><span class="lbl">충진률&nbsp;</span><span class="val" id="hFill">0.0%</span></div>
+    <div><span class="lbl">물리시간</span><span class="val" id="hTime">0.000 s</span></div>
+    <div><span class="lbl">표시복셀</span><span class="val" id="hVox">0</span></div>
+    <div style="margin-top:4px;font-size:9px;color:#2a4a60">
+      좌클릭:회전 | 우클릭·중간:이동 | Shift+드래그:이동 | 스크롤:줌
+        <div>Front</div>
+        <div style="margin-top:22px">Gate</div>
+      </div>
+    </div>
+    <div style="margin-top:6px;font-size:9px;color:#4a6e88">
+      <span style="color:#ffffff44">━━</span> Mesh<br>
+      <span style="color:#4df0c080">■</span> Voxel
+    </div>
+  </div>
+
+  <!-- ★ 우측 실시간 조절 패널 -->
+  <div id="rpanel">
+    <div id="rphead" onclick="toggleRPanel()">
+      <span>⚙ 표시 설정</span>
+      <span id="rptoggle">▲</span>
+    </div>
+    <div id="rpbody">
+
+      <div class="rtitle">색상 테마</div>
+      <div class="rrow">
+        <select class="rsel" id="selTheme" onchange="applyTheme(this.value)">
+          <option value="blueyellow">🔵→🟡 파랑→노랑 (기본)</option>
+          <option value="redwhite">🔴→⚪ 빨강→흰색</option>
+          <option value="greenorange">🟢→🟠 초록→주황</option>
+          <option value="rainbow">🌈 무지개</option>
+          <option value="heat">🌡 열화상</option>
+          <option value="cyan">🩵 시안 단색</option>
+        </select>
+      </div>
+
+      <hr class="rdiv">
+      <div class="rtitle">복셀</div>
+      <div class="rrow">
+        <span class="rlbl">형상</span>
+        <select class="rsel" id="selVoxShape" onchange="setVoxShape(this.value)">
+          <option value="box">■ 정육면체 (기본)</option>
+          <option value="sphere">● 구</option>
+          <option value="cylinder">⬤ 원기둥</option>
+          <option value="octahedron">◆ 팔면체</option>
+        </select>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">투명도</span>
+        <input class="rslider" type="range" min="10" max="100" value="90"
+               oninput="setVoxOpacity(this.value/100);document.getElementById('rvoxOp').textContent=this.value+'%'">
+        <span class="rval" id="rvoxOp">90%</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">발광(emissive)</span>
+        <input class="rslider" type="range" min="0" max="100" value="55"
+               oninput="setEmissive(this.value/100);document.getElementById('rvoxEm').textContent=this.value+'%'">
+        <span class="rval" id="rvoxEm">55%</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">광택(shininess)</span>
+        <input class="rslider" type="range" min="0" max="150" value="60"
+               oninput="setShininess(parseInt(this.value));document.getElementById('rvoxSh').textContent=this.value">
+        <span class="rval" id="rvoxSh">60</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">크기</span>
+        <input class="rslider" type="range" min="50" max="200" value="100"
+               oninput="setVoxSize(this.value/100);document.getElementById('rvoxSz').textContent=this.value+'%'">
+        <span class="rval" id="rvoxSz">100%</span>
+      </div>
+
+      <hr class="rdiv">
+      <div class="rtitle">조명</div>
+      <div class="rrow">
+        <span class="rlbl">주변광</span>
+        <input class="rslider" type="range" min="0" max="200" value="120"
+               oninput="setAmbient(this.value/100);document.getElementById('rAmb').textContent=this.value+'%'">
+        <span class="rval" id="rAmb">120%</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">방향광</span>
+        <input class="rslider" type="range" min="0" max="200" value="100"
+               oninput="setDirLight(this.value/100);document.getElementById('rDir').textContent=this.value+'%'">
+        <span class="rval" id="rDir">100%</span>
+      </div>
+
+      <hr class="rdiv">
+      <div class="rtitle">Wireframe</div>
+      <div class="rrow">
+        <span class="rlbl">투명도</span>
+        <input class="rslider" type="range" min="0" max="100" value="18"
+               oninput="setWireOp(this.value/100);document.getElementById('rwireOp').textContent=this.value+'%'">
+        <span class="rval" id="rwireOp">18%</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">색상</span>
+        <input type="color" value="#ffffff"
+               style="width:38px;height:20px;cursor:pointer;border:none;background:none"
+               oninput="setWireColor(this.value)">
+        <span class="rval" style="font-size:9px;color:#3a6a8a">선택</span>
+      </div>
+
+      <hr class="rdiv">
+      <div class="rtitle">Solid Shell (검은 Mesh)</div>
+      <div class="rrow">
+        <span class="rlbl">투명도</span>
+        <input class="rslider" type="range" min="0" max="100" value="35"
+               oninput="setSolidOp(this.value/100);document.getElementById('rsolOp').textContent=this.value+'%'">
+        <span class="rval" id="rsolOp">35%</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">색상</span>
+        <input type="color" value="#3a6080"
+               style="width:38px;height:20px;cursor:pointer;border:none;background:none"
+               oninput="setSolidColor(this.value)">
+        <span class="rval" style="font-size:9px;color:#3a6a8a">선택</span>
+      </div>
+      <div class="rrow">
+        <span class="rlbl">측면</span>
+        <select class="rsel" id="selSolidSide" onchange="setSolidSide(this.value)">
+          <option value="double">양면 (기본)</option>
+          <option value="front">앞면만</option>
+          <option value="back">뒷면만</option>
+        </select>
+      </div>
+
+      <hr class="rdiv">
+      <div class="rtitle">배경</div>
+      <div class="rrow">
+        <span class="rlbl">배경색</span>
+        <input type="color" value="#07101f"
+               style="width:38px;height:20px;cursor:pointer;border:none;background:none"
+               oninput="setBg(this.value)">
+        <span class="rval" style="font-size:9px;color:#3a6a8a">선택</span>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /viewport -->
+</div><!-- /container -->
+<div id="ctrl">
+  <div class="crow">
+    <div id="progwrap">
+      <div id="progbg"></div><div id="progfill"></div><div id="progthumb"></div>
+    </div>
+    <span id="fc">1 / {nf}</span>
+  </div>
+  <div class="crow">
+    <button class="btn" id="btnPlay" onclick="togglePlay()">▶ Play</button>
+    <button class="btn" id="btnReset" onclick="resetAnim()">↩ Reset</button>
+    <button class="btn" id="btnRot" onclick="toggleAutoRot()">⟳ Auto</button>
+    <button class="btn" id="btnWire" onclick="toggleWire()">⬡ Wire</button>
+    <button class="btn" id="btnSolid" onclick="toggleSolid()">◼ Solid</button>
+    <span style="font-size:11px;color:#4a6e88">Speed</span>
+    <input id="spdRange" type="range" min="1" max="8" value="3" step="1"
+           style="width:70px" oninput="onSpeed(this.value)">
+    <span id="spdlbl">1.5×</span>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ════════════════════════════════════════════════
+// DATA DECODE
+// ════════════════════════════════════════════════
+const XYZW_B64 = "{xyzw_b64}";
+const THRS     = {thr_json};
+const NF       = {nf};
+const VSIZE    = {vs};
+const WIRE_PTS = {mesh_wire_json};
+const FACE_PTS = {mesh_faces_json};
+const FILL_TIME = window.FILL_TIME || 1.0;
+// ── 게이트 실제 크기 (정규화 좌표계) ──
+const GATE_R     = {js_gate_r};   // 원형 반경
+const GATE_W     = {js_gate_w};   // 직사각형 가로
+const GATE_H     = {js_gate_h};   // 직사각형 세로
+const GATE_SHAPE = "{js_gate_shape}"; // "circular" | "rectangular"
+
+// base64 → Float32Array
+function b64toF32(b64) {{
+  const bin = atob(b64);
+  const buf = new ArrayBuffer(bin.length);
+  const u8  = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Float32Array(buf);
+}}
+const raw = b64toF32(XYZW_B64);   // [x,y,z,w, x,y,z,w, ...]
+const M   = raw.length / 4;
+
+// ════════════════════════════════════════════════
+// THREE.JS SETUP
+// ════════════════════════════════════════════════
+const container = document.getElementById('container');
+const viewport  = document.getElementById('viewport');
+const renderer  = new THREE.WebGLRenderer({{ antialias: true, alpha: true }});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x07101f, 1);
+viewport.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+// ★ FOV를 낮춰 원근 왜곡(사다리꼴 효과) 최소화 (45→22)
+const camera = new THREE.PerspectiveCamera(22, 1, 0.001, 300);
+camera.position.set(5.5, 3.8, 5.5);
+camera.lookAt(0, 0, 0);
+
+// ── Ambient + directional light ─────────────────
+const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
+scene.add(ambientLight);
+const dLight = new THREE.DirectionalLight(0xffffff, 1.0);
+dLight.position.set(3, 5, 3);
+scene.add(dLight);
+const dLight2 = new THREE.DirectionalLight(0x8899ff, 0.4);
+dLight2.position.set(-2, -2, -3);
+scene.add(dLight2);
+
+// ── Axes helper (small) ─────────────────────────
+// AxesHelper 제거 → 좌하단 2D canvas gizmo 사용
+
+// ════════════════════════════════════════════════
+// MESH WIREFRAME OVERLAY
+// ════════════════════════════════════════════════
+let wireObj  = null;
+let solidObj = null;
+
+if (WIRE_PTS && WIRE_PTS.length > 0) {{
+  const wGeo = new THREE.BufferGeometry();
+  wGeo.setAttribute('position', new THREE.Float32BufferAttribute(WIRE_PTS, 3));
+  const wMat = new THREE.LineBasicMaterial({{
+    color: 0xffffff, transparent: true, opacity: 0.18, depthWrite: false
+  }});
+  wireObj = new THREE.LineSegments(wGeo, wMat);
+  scene.add(wireObj);
+}}
+
+if (FACE_PTS && FACE_PTS.length > 0) {{
+  const fGeo = new THREE.BufferGeometry();
+  fGeo.setAttribute('position', new THREE.Float32BufferAttribute(FACE_PTS, 3));
+  fGeo.computeVertexNormals();
+
+  // ── 반투명 Shell — 형상 윤곽 + 내부 복셀이 비쳐 보이게
+  // (BackSide 색칠 마스크는 CPU trimesh.contains() 필터로 대체됨)
+  const fMat = new THREE.MeshPhongMaterial({{
+    color: new THREE.Color(0x4488bb),
+    emissive: new THREE.Color(0x0a1a2a),
+    emissiveIntensity: 0.6,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,   // 양면 렌더 — 내부에서도 윤곽이 보임
+    depthWrite: false,
+    depthTest: true,
+  }});
+  solidObj = new THREE.Mesh(fGeo, fMat);
+  solidObj.renderOrder = 2;   // 복셀(1) 위에 그림
+  scene.add(solidObj);
+}}
+
+// ════════════════════════════════════════════════
+// COLOR THEMES
+// ════════════════════════════════════════════════
+const THEMES = {{
+  blueyellow: w => {{
+    if (w < 0.5) {{
+      const t = w * 2;
+      return [0.05 + t*0.00, 0.45 + t*0.45, 0.99 + t*0.01];
+    }} else {{
+      const t = (w-0.5)*2;
+      return [0.05 + t*0.95, 0.90, 1.00 - t*0.60];
+    }}
+  }},
+  redwhite: w => [1.0, w*0.85, w*0.85],
+  greenorange: w => {{
+    if (w < 0.5) {{
+      const t = w*2;
+      return [0.04+t*0.60, 0.80-t*0.10, 0.10];
+    }} else {{
+      const t = (w-0.5)*2;
+      return [0.64+t*0.36, 0.70+t*0.20, 0.10];
+    }}
+  }},
+  rainbow: w => {{
+    const h=(1-w)*0.75, i=Math.floor(h*6), f=h*6-i;
+    const p=1*(1-1), q=1*(1-f*1), tv=1*(1-(1-f)*1);
+    const lut=[[1,tv,p],[q,1,p],[p,1,tv],[p,q,1],[tv,p,1],[1,p,q]];
+    return lut[i%6];
+  }},
+  heat: w => [Math.min(1,w*2), Math.max(0,Math.min(1,w*2-0.5)), Math.max(0,1-w*2)],
+  cyan: w => [0.05, 0.40+w*0.55, 0.70+w*0.30],
+}};
+let currentTheme = 'blueyellow';
+
+function weightToColor(w) {{
+  return (THEMES[currentTheme] || THEMES.blueyellow)(w);
+}}
+
+// ════════════════════════════════════════════════
+// VOXEL MATERIAL + INSTANCED MESH
+// ════════════════════════════════════════════════
+const voxGeo = new THREE.BoxGeometry(VSIZE * 0.92, VSIZE * 0.92, VSIZE * 0.92);
+// ★ vertexColors 제거 — InstancedMesh는 setColorAt 으로 per-instance 색상 적용
+const voxMat = new THREE.MeshPhongMaterial({{
+  transparent: true,
+  opacity: 0.90,
+  shininess: 60,
+  emissiveIntensity: 0.55,
+}});
+const instMesh = new THREE.InstancedMesh(voxGeo, voxMat, M);
+instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(instMesh);
+
+// ★ setColorAt 방식으로 per-instance 색상 초기화
+const _tmpColor = new THREE.Color();
+function _applyInstanceColors() {{
+  const fn = THEMES[currentTheme] || THEMES.blueyellow;
+  for (let i = 0; i < M; i++) {{
+    const c = fn(raw[i*4+3]);
+    _tmpColor.setRGB(c[0], c[1], c[2]);
+    instMesh.setColorAt(i, _tmpColor);
+  }}
+  if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+}}
+_applyInstanceColors();
+
+function rebuildColors() {{
+  const fn = THEMES[currentTheme] || THEMES.blueyellow;
+  for (let i = 0; i < M; i++) {{
+    const c = fn(raw[i*4+3]);
+    _tmpColor.setRGB(c[0], c[1], c[2]);
+    instMesh.setColorAt(i, _tmpColor);
+  }}
+  if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
+}}
+
+function applyTheme(t) {{
+  currentTheme = t;
+  rebuildColors();
+}}
+
+// ── 형상 교체 지원 (setVoxShape용) ──────────────────
+let currentVoxShape = 'box';
+function setVoxShape(shape) {{
+  currentVoxShape = shape;
+  let newGeo;
+  const s = VSIZE * 0.92;
+  switch(shape) {{
+    case 'sphere':     newGeo = new THREE.SphereGeometry(s*0.58, 8, 6); break;
+    case 'cylinder':   newGeo = new THREE.CylinderGeometry(s*0.45, s*0.45, s*0.9, 8); break;
+    case 'octahedron': newGeo = new THREE.OctahedronGeometry(s*0.62); break;
+    default:           newGeo = new THREE.BoxGeometry(s, s, s); break;
+  }}
+  instMesh.geometry.dispose();
+  instMesh.geometry = newGeo;
+}}
+
+// ════════════════════════════════════════════════
+// PANEL CONTROL FUNCTIONS
+// ════════════════════════════════════════════════
+function toggleRPanel() {{
+  document.getElementById('rpanel').classList.toggle('collapsed');
+  document.getElementById('rptoggle').textContent =
+    document.getElementById('rpanel').classList.contains('collapsed') ? '▼' : '▲';
+}}
+function setVoxOpacity(v)   {{ voxMat.opacity = v; }}
+function setEmissive(v)     {{
+  // ★ emissive 색상은 현재 테마 대표색에 intensity 적용
+  voxMat.emissive = new THREE.Color(0.08 * v, 0.25 * v, 0.30 * v);
+  voxMat.emissiveIntensity = v;
+}}
+function setShininess(v)    {{ voxMat.shininess = v; }}
+let voxScale = 1.0;
+function setVoxSize(v)      {{ voxScale = v; setFrame(curFrame); }}
+function setWireOp(v)       {{ if (wireObj) wireObj.material.opacity = v; }}
+function setWireColor(hex)  {{ if (wireObj) {{ wireObj.material.color.set(hex); wireObj.material.needsUpdate = true; }} }}
+function setSolidOp(v)      {{ if (solidObj) solidObj.material.opacity = v; }}
+function setSolidColor(hex) {{ if (solidObj) {{ solidObj.material.color.set(hex); solidObj.material.emissive.set(hex).multiplyScalar(0.3); solidObj.material.needsUpdate = true; }} }}
+function setSolidSide(v) {{
+  if (!solidObj) return;
+  solidObj.material.side = v === 'front' ? THREE.FrontSide : v === 'back' ? THREE.BackSide : THREE.DoubleSide;
+}}
+function setBg(hex) {{
+  const c = parseInt(hex.replace('#',''), 16);
+  renderer.setClearColor(c, 1);
+  document.body.style.background = hex;
+}}
+function setAmbient(v)  {{ ambientLight.intensity = v; }}
+function setDirLight(v) {{ dLight.intensity = v; }}
+
+const dummy = new THREE.Object3D();
+
+// gate marker — 실제 게이트 크기로 표현
+let gateIdx = 0;
+for (let i = 1; i < M; i++) {{
+  if (raw[i*4+3] < raw[gateIdx*4+3]) gateIdx = i;
+}}
+let gateObj;
+if (GATE_SHAPE === 'rectangular') {{
+  // 직사각형 게이트: 얇은 박스로 표현
+  gateObj = new THREE.Mesh(
+    new THREE.BoxGeometry(GATE_W, GATE_H, GATE_H * 0.5),
+    new THREE.MeshPhongMaterial({{ color: 0xff3355, emissive: 0x661122, transparent: true, opacity: 0.9 }})
+  );
+}} else {{
+  // 원형/기본 게이트: 실제 반경의 구
+  gateObj = new THREE.Mesh(
+    new THREE.SphereGeometry(GATE_R, 16, 12),
+    new THREE.MeshPhongMaterial({{ color: 0xff3355, emissive: 0x661122, transparent: true, opacity: 0.9 }})
+  );
+}}
+gateObj.position.set(raw[gateIdx*4], raw[gateIdx*4+1], raw[gateIdx*4+2]);
+scene.add(gateObj);
+
+// ── Frame update: show voxels with weight <= threshold ──
+function setFrame(f) {{
+  const thr = THRS[f] || 0;
+  let visible = 0;
+  for (let i = 0; i < M; i++) {{
+    const w = raw[i * 4 + 3];
+    if (w <= thr) {{
+      dummy.position.set(raw[i*4], raw[i*4+1], raw[i*4+2]);
+      dummy.scale.setScalar(voxScale);
+      dummy.updateMatrix();
+      instMesh.setMatrixAt(i, dummy.matrix);
+      visible++;
+    }} else {{
+      // move off-screen
+      dummy.position.set(0, -999, 0);
+      dummy.scale.setScalar(0.001);
+      dummy.updateMatrix();
+      instMesh.setMatrixAt(i, dummy.matrix);
+    }}
+  }}
+  instMesh.instanceMatrix.needsUpdate = true;
+
+  // HUD
+  const fillPct = (thr * 100).toFixed(1);
+  document.getElementById('hFill').textContent = fillPct + '%';
+  document.getElementById('hVox').textContent  = visible.toLocaleString();
+  const t = (f / NF) * FILL_TIME;
+  document.getElementById('hTime').textContent =
+    t < 1 ? (t*1000).toFixed(1)+' ms' : t.toFixed(3)+' s';
+
+  // progress bar
+  const pct = (f / Math.max(NF-1, 1)) * 100;
+  document.getElementById('progfill').style.width = pct + '%';
+  document.getElementById('progthumb').style.left  = pct + '%';
+  document.getElementById('fc').textContent = (f+1) + ' / ' + NF;
+}}
+
+// 시작/리셋 공통: 모든 복셀 숨김, HUD 초기화
+function hideAll() {{
+  for (let i = 0; i < M; i++) {{
+    dummy.position.set(0, -9999, 0);
+    dummy.scale.setScalar(0.0001);
+    dummy.updateMatrix();
+    instMesh.setMatrixAt(i, dummy.matrix);
+  }}
+  instMesh.instanceMatrix.needsUpdate = true;
+  document.getElementById('hFill').textContent  = '0.0%';
+  document.getElementById('hVox').textContent   = '0';
+  document.getElementById('hTime').textContent  = '0.000 s';
+  document.getElementById('progfill').style.width = '0%';
+  document.getElementById('progthumb').style.left  = '0%';
+  document.getElementById('fc').textContent = '0 / ' + NF;
+}}
+hideAll();  // 시작 시 빈 상태
+
+// ════════════════════════════════════════════════
+// SIMPLE ORBIT CONTROLS (no import needed)
+// ════════════════════════════════════════════════
+let isDrag = false;
+let lastMX = 0, lastMY = 0;
+let spherical = {{ theta: 0.8, phi: 1.1, r: 7.0 }};  // ★ r 확대 (FOV 축소에 맞춤)
+let target = new THREE.Vector3(0, 0, 0);
+let panOffset = new THREE.Vector3();
+
+function updateCamera() {{
+  const x = spherical.r * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+  const y = spherical.r * Math.cos(spherical.phi);
+  const z = spherical.r * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+  camera.position.set(
+    target.x + panOffset.x + x,
+    target.y + panOffset.y + y,
+    target.z + panOffset.z + z
+  );
+  // phi > π 구간(아래쪽 반구)에서 up벡터 뒤집기 → 뒤집힘 없이 자연스럽게 통과
+  const flipped = (spherical.phi % (Math.PI * 2)) > Math.PI;
+  camera.up.set(0, flipped ? -1 : 1, 0);
+  camera.lookAt(
+    target.x + panOffset.x,
+    target.y + panOffset.y,
+    target.z + panOffset.z
+  );
+}}
+updateCamera();
+
+const cvs = renderer.domElement;
+// 좌클릭: 회전 | 우클릭/중간버튼: 이동 | Shift+좌클릭: 이동
+let isPan = false;
+cvs.addEventListener('contextmenu', e => e.preventDefault());
+cvs.addEventListener('mousedown', e => {{
+  isDrag = true;
+  isPan = (e.button === 2 || e.button === 1 || e.shiftKey);
+  lastMX = e.clientX; lastMY = e.clientY;
+}});
+window.addEventListener('mouseup', () => {{ isDrag = false; isPan = false; }});
+window.addEventListener('mousemove', e => {{
+  if (!isDrag) return;
+  const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
+  lastMX = e.clientX; lastMY = e.clientY;
+  if (isPan || e.shiftKey) {{
+    // ★ 카메라 정렬 좌표계 기반 패닝 — 화면 기준 정확한 상하/좌우 이동
+    const s = spherical.r * 0.0015;
+    const viewDir = camera.getWorldDirection(new THREE.Vector3());
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const camRight = new THREE.Vector3().crossVectors(viewDir, worldUp).normalize();
+    // 화면 기준 진짜 위쪽 벡터 (right × viewDir)
+    const camUp = new THREE.Vector3().crossVectors(camRight, viewDir).normalize();
+    panOffset.addScaledVector(camRight, dx * s);
+    panOffset.addScaledVector(camUp, -dy * s);
+  }} else {{
+    spherical.theta -= dx * 0.008;
+    // phi 자유 회전 (2π 한 바퀴 이상) — up벡터 플립으로 뒤집힘 방지
+    spherical.phi += dy * 0.008;
+  }}
+  updateCamera();
+}});
+cvs.addEventListener('wheel', e => {{
+  e.preventDefault();
+  spherical.r = Math.max(0.5, Math.min(15, spherical.r * (e.deltaY > 0 ? 1.08 : 0.93)));
+  updateCamera();
+}}, {{ passive: false }});
+
+// Touch
+let t0x=0, t0y=0, pinchD0=0;
+cvs.addEventListener('touchstart', e => {{
+  if (e.touches.length === 1) {{ t0x=e.touches[0].clientX; t0y=e.touches[0].clientY; }}
+  else if (e.touches.length === 2) {{
+    const dx=e.touches[0].clientX-e.touches[1].clientX;
+    const dy=e.touches[0].clientY-e.touches[1].clientY;
+    pinchD0=Math.sqrt(dx*dx+dy*dy);
+  }}
+  e.preventDefault();
+}}, {{ passive: false }});
+cvs.addEventListener('touchmove', e => {{
+  if (e.touches.length === 1) {{
+    spherical.theta -= (e.touches[0].clientX - t0x) * 0.010;
+    // phi 자유 회전 (touch)
+    spherical.phi += (e.touches[0].clientY - t0y) * 0.010;
+    t0x=e.touches[0].clientX; t0y=e.touches[0].clientY;
+  }} else if (e.touches.length === 2) {{
+    const dx=e.touches[0].clientX-e.touches[1].clientX;
+    const dy=e.touches[0].clientY-e.touches[1].clientY;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    spherical.r=Math.max(0.5,Math.min(15,spherical.r*(pinchD0/d)));
+    pinchD0=d;
+  }}
+  updateCamera();
+  e.preventDefault();
+}}, {{ passive: false }});
+
+// ════════════════════════════════════════════════
+// ANIMATION LOOP
+// ════════════════════════════════════════════════
+let curFrame  = 0;
+let playing   = false;
+let autoRot   = false;
+let lastTick  = 0;
+let frameMs   = 80;
+const SPEED_TABLE = [300, 200, 120, 80, 50, 35, 20, 12];
+const SPEED_LABELS = ['0.5×','1×','1.5×','2×','3×','4×','6×','8×'];
+
+function onSpeed(v) {{
+  const i = parseInt(v) - 1;
+  frameMs = SPEED_TABLE[i];
+  document.getElementById('spdlbl').textContent = SPEED_LABELS[i];
+}}
+
+function togglePlay() {{
+  playing = !playing;
+  const b = document.getElementById('btnPlay');
+  b.textContent = playing ? '⏸ Pause' : '▶ Play';
+  b.classList.toggle('on', playing);
+}}
+function resetAnim() {{
+  playing = false;
+  curFrame = 0;
+  document.getElementById('btnPlay').textContent = '▶ Play';
+  document.getElementById('btnPlay').classList.remove('on');
+  hideAll();  // 리셋도 빈 상태로
+}}
+function toggleAutoRot() {{
+  autoRot = !autoRot;
+  document.getElementById('btnRot').classList.toggle('on', autoRot);
+}}
+function toggleWire() {{
+  if (wireObj) {{ wireObj.visible = !wireObj.visible; }}
+  document.getElementById('btnWire').classList.toggle('on', wireObj && wireObj.visible);
+}}
+function toggleSolid() {{
+  if (solidObj) {{ solidObj.visible = !solidObj.visible; }}
+  document.getElementById('btnSolid').classList.toggle('on', solidObj && solidObj.visible);
+}}
+
+// ════════════════════════════════════════════════
+// XYZ AXIS GIZMO
+// ════════════════════════════════════════════════
+const gizmoCanvas = document.getElementById('gizmoCvs');
+const gCtx = gizmoCanvas.getContext('2d');
+const GCX = 36, GCY = 36, GLEN = 26;
+const GAXES = [
+  {{ label:'X', dir:[1,0,0], col:'#ff5555', negCol:'#551111' }},
+  {{ label:'Y', dir:[0,1,0], col:'#55ff55', negCol:'#115511' }},
+  {{ label:'Z', dir:[0,0,1], col:'#5599ff', negCol:'#112255' }},
+];
+
+function drawGizmo() {{
+  gCtx.clearRect(0, 0, 72, 72);
+  // 카메라 rotation matrix로 축 투영
+  const m = camera.matrixWorldInverse;
+  const proj = GAXES.map(ax => {{
+    // 월드 축 → 카메라 뷰 공간 변환 (회전만)
+    const vx = m.elements[0]*ax.dir[0] + m.elements[4]*ax.dir[1] + m.elements[8]*ax.dir[2];
+    const vy = m.elements[1]*ax.dir[0] + m.elements[5]*ax.dir[1] + m.elements[9]*ax.dir[2];
+    const vz = m.elements[2]*ax.dir[0] + m.elements[6]*ax.dir[1] + m.elements[10]*ax.dir[2];
+    return {{
+      label: ax.label, col: ax.col, negCol: ax.negCol,
+      sx: GCX + vx * GLEN, sy: GCY - vy * GLEN,  // canvas Y 반전
+      nsx: GCX - vx * GLEN, nsy: GCY + vy * GLEN,
+      depth: vz,
+    }};
+  }});
+
+  // 깊이순 정렬 (먼 것 먼저)
+  proj.sort((a,b) => a.depth - b.depth);
+
+  // 음수축 (점선, 어둡게)
+  proj.forEach(ax => {{
+    gCtx.beginPath();
+    gCtx.moveTo(GCX, GCY);
+    gCtx.lineTo(ax.nsx, ax.nsy);
+    gCtx.strokeStyle = ax.negCol;
+    gCtx.lineWidth = 1.2;
+    gCtx.setLineDash([3,3]);
+    gCtx.globalAlpha = 0.55;
+    gCtx.stroke();
+    gCtx.setLineDash([]);
+    gCtx.globalAlpha = 1.0;
+  }});
+
+  // 양수축 (가까운 것이 위에 오도록 역순)
+  [...proj].reverse().forEach(ax => {{
+    // 선
+    gCtx.beginPath();
+    gCtx.moveTo(GCX, GCY);
+    gCtx.lineTo(ax.sx, ax.sy);
+    gCtx.strokeStyle = ax.col;
+    gCtx.lineWidth = 2.5;
+    gCtx.stroke();
+    // 화살촉
+    const ang = Math.atan2(ax.sy - GCY, ax.sx - GCX);
+    gCtx.beginPath();
+    gCtx.moveTo(ax.sx, ax.sy);
+    gCtx.lineTo(ax.sx - 8*Math.cos(ang-0.4), ax.sy - 8*Math.sin(ang-0.4));
+    gCtx.lineTo(ax.sx - 8*Math.cos(ang+0.4), ax.sy - 8*Math.sin(ang+0.4));
+    gCtx.closePath();
+    gCtx.fillStyle = ax.col;
+    gCtx.fill();
+    // 라벨
+    const lx = ax.sx + (ax.sx-GCX)*0.32, ly = ax.sy + (ax.sy-GCY)*0.32;
+    gCtx.font = 'bold 11px Courier New';
+    gCtx.fillStyle = ax.col;
+    gCtx.textAlign = 'center';
+    gCtx.textBaseline = 'middle';
+    gCtx.fillText(ax.label, lx, ly);
+  }});
+
+  // 원점 점
+  gCtx.beginPath();
+  gCtx.arc(GCX, GCY, 2.5, 0, Math.PI*2);
+  gCtx.fillStyle = '#ffffff';
+  gCtx.fill();
+}}
+
+function animate(ts) {{
+  requestAnimationFrame(animate);
+  if (autoRot) {{
+    spherical.theta += 0.004;
+    updateCamera();
+  }}
+  if (playing && ts - lastTick >= frameMs) {{
+    lastTick = ts;
+    curFrame = (curFrame + 1) % NF;
+    setFrame(curFrame);
+  }}
+  renderer.render(scene, camera);
+  drawGizmo();
+}}
+
+// ════════════════════════════════════════════════
+// PROGRESS BAR DRAG
+// ════════════════════════════════════════════════
+const pw = document.getElementById('progwrap');
+let pdrag = false;
+function seekTo(e) {{
+  const rect = pw.getBoundingClientRect();
+  const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+  curFrame = Math.round(Math.max(0, Math.min(1, x / rect.width)) * (NF - 1));
+  setFrame(curFrame);
+}}
+pw.addEventListener('mousedown',  e => {{ pdrag=true; seekTo(e); }});
+window.addEventListener('mouseup',  () => pdrag=false);
+window.addEventListener('mousemove', e => {{ if(pdrag) seekTo(e); }});
+pw.addEventListener('touchstart', e => {{ pdrag=true; seekTo(e); }}, {{passive:true}});
+
+// ════════════════════════════════════════════════
+// RESIZE
+// ════════════════════════════════════════════════
+function onResize() {{
+  const w = viewport.clientWidth;
+  const h = viewport.clientHeight;
+  if (w < 1 || h < 1) return;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}}
+window.addEventListener('resize', onResize);
+onResize();
+
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>"""
+    return html
+
+
 def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
                         num_frames: int = 30, max_points: int = 8000) -> str:
     """
@@ -1046,7 +2137,7 @@ canvas:active{{cursor:grabbing}}
     <div><span class="lbl">충진률 </span><span class="val" id="h-fill">0.0%</span></div>
     <div><span class="lbl">물리시간</span><span class="val" id="h-time">0.000 s</span></div>
     <div><span class="lbl">표시복셀</span><span class="val" id="h-vox">0</span></div>
-    <div style="margin-top:4px;font-size:10px;color:#33556e">드래그:회전 | Shift:이동 | 스크롤:줌</div>
+    <div style="margin-top:4px;font-size:10px;color:#33556e">좌클릭:회전 | 우클릭·중간:이동 | Shift+드래그:이동 | 스크롤:줌</div>
   </div>
 
   <div id="ctrl">
@@ -1315,17 +2406,21 @@ window.addEventListener('touchmove',    e => {{ if(progDrag) seekTo(e); }}, {{pa
 
 // ══════════════════════════════════════════════════
 // 카메라 마우스/터치
+// 좌클릭: 회전 | 우클릭/중간버튼: 이동 | Shift+좌클릭: 이동
 // ══════════════════════════════════════════════════
-let drag=false, lastX=0, lastY=0;
-canvas.addEventListener('mousedown', e=>{{ drag=true; lastX=e.clientX; lastY=e.clientY; }});
-window.addEventListener('mouseup',   ()=>drag=false);
+let drag=false, panDrag=false, lastX=0, lastY=0;
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+canvas.addEventListener('mousedown', e=>{{
+  lastX=e.clientX; lastY=e.clientY;
+  if(e.button===2||e.button===1){{ panDrag=true; }}
+  else {{ drag=true; }}
+}});
+window.addEventListener('mouseup', ()=>{{ drag=false; panDrag=false; }});
 window.addEventListener('mousemove', e=>{{
-  if(!drag) return;
   const dx=e.clientX-lastX, dy=e.clientY-lastY;
   lastX=e.clientX; lastY=e.clientY;
-  if(e.shiftKey){{ panX+=dx; panY+=dy; }}
-  else {{ rotY+=dx*.013; rotX+=dy*.013; rotX=Math.max(-Math.PI/2,Math.min(Math.PI/2,rotX)); }}
-  draw();
+  if(panDrag||(drag&&e.shiftKey)){{ panX+=dx; panY+=dy; draw(); }}
+  else if(drag){{ rotY+=dx*.013; rotX+=dy*.013; rotX=Math.max(-Math.PI/2,Math.min(Math.PI/2,rotX)); draw(); }}
 }});
 canvas.addEventListener('wheel', e=>{{
   e.preventDefault();
@@ -1436,7 +2531,7 @@ with tab1:
                 render_ram_advisor(mesh)
 
             # 게이트 위치 추천
-            st.subheader("2️⃣ Gate Position")
+            st.subheader("2️⃣ Gate Position & Size")
 
             if st.button("🎯 게이트 위치 추천", use_container_width=True):
                 with st.spinner("게이트 위치 분석 중..."):
@@ -1473,6 +2568,85 @@ with tab1:
                 st.session_state.gate_y = st.number_input("Gate Y (mm)", value=st.session_state.gate_y)
             with col_gz:
                 st.session_state.gate_z = st.number_input("Gate Z (mm)", value=st.session_state.gate_z)
+
+            # ── ★ 게이트 크기 설정 섹션 ─────────────────────────
+            st.divider()
+            st.markdown("##### 📐 게이트 크기 설정")
+
+            # 공식 기반 추천값 계산 및 표시
+            gate_rec = calc_gate_size_recommendation(mesh, st.session_state.material)
+
+            if "error" not in gate_rec:
+                with st.expander("📊 공식 기반 추천 게이트 크기 (클릭하여 확인)", expanded=True):
+                    st.markdown(f"**공정:** {gate_rec['process']}")
+                    rc1, rc2, rc3 = st.columns(3)
+                    with rc1:
+                        st.metric("추천 두께 (t)", f"{gate_rec['t_gate']} mm",
+                                  help=gate_rec['formula_t'])
+                    with rc2:
+                        st.metric("추천 폭 (W)", f"{gate_rec['w_gate']} mm",
+                                  help=gate_rec['formula_w'])
+                    with rc3:
+                        st.metric("원형 환산 직경 (d)", f"{gate_rec['d_gate']} mm",
+                                  help="d = 2×√(W×t/π)")
+
+                    # 전단율 경고
+                    sr_icon = "🔴" if gate_rec['warn_rect'] else "🟢"
+                    st.caption(
+                        f"{sr_icon} 직사각형 전단율: **{gate_rec['shear_rect']:,} /s** "
+                        f"(허용: {gate_rec['shear_limit']:,}/s) &nbsp;|&nbsp; "
+                        f"{'🔴' if gate_rec['warn_circ'] else '🟢'} 원형 전단율: **{gate_rec['shear_circ']:,} /s**"
+                    )
+                    st.caption(f"부품 체적: {gate_rec['vol_mm3']} mm³ | 표면적: {gate_rec['surf_mm2']} mm² | 추정 벽두께: {gate_rec['t_wall_est']} mm")
+
+                    # 추천값 적용 버튼
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        if st.button("✅ 추천값으로 직사각형 게이트 적용", use_container_width=True):
+                            st.session_state.gate_shape  = "rectangular"
+                            st.session_state.gate_width  = float(gate_rec['w_gate'])
+                            st.session_state.gate_height = float(gate_rec['t_gate'])
+                            st.session_state.gate_dia    = float(gate_rec['d_gate'])
+                            st.rerun()
+                    with bc2:
+                        if st.button("✅ 추천값으로 원형 게이트 적용", use_container_width=True):
+                            st.session_state.gate_shape = "circular"
+                            st.session_state.gate_dia   = float(gate_rec['d_gate'])
+                            st.rerun()
+
+            # ── 게이트 형상 선택 ─────────────────────────────────
+            gate_shape_opt = {"원형 (Circular)": "circular", "직사각형 (Rectangular)": "rectangular"}
+            cur_shape_label = [k for k, v in gate_shape_opt.items()
+                               if v == st.session_state.gate_shape][0]
+            chosen_label = st.selectbox("게이트 형상", list(gate_shape_opt.keys()),
+                                         index=list(gate_shape_opt.keys()).index(cur_shape_label),
+                                         key="gate_shape_sel")
+            st.session_state.gate_shape = gate_shape_opt[chosen_label]
+
+            if st.session_state.gate_shape == "circular":
+                st.session_state.gate_dia = st.number_input(
+                    "원형 게이트 직경 (mm)",
+                    min_value=0.3, max_value=15.0,
+                    value=float(st.session_state.gate_dia), step=0.1,
+                    help="최소 0.3 mm / MIM 일반: 0.5~3 mm / 플라스틱: 1~5 mm"
+                )
+                st.caption(f"단면적: {np.pi*(st.session_state.gate_dia/2)**2:.2f} mm²")
+            else:
+                gw_col, gh_col = st.columns(2)
+                with gw_col:
+                    st.session_state.gate_width = st.number_input(
+                        "게이트 가로 폭 W (mm)",
+                        min_value=0.3, max_value=20.0,
+                        value=float(st.session_state.gate_width), step=0.1
+                    )
+                with gh_col:
+                    st.session_state.gate_height = st.number_input(
+                        "게이트 세로 두께 t (mm)",
+                        min_value=0.3, max_value=10.0,
+                        value=float(st.session_state.gate_height), step=0.1
+                    )
+                gate_area = st.session_state.gate_width * st.session_state.gate_height
+                st.caption(f"단면적: {gate_area:.2f} mm² | 원형 환산 직경: {2*np.sqrt(gate_area/np.pi):.2f} mm")
 
             # ── 3D 시각화 ─────────────────────────────────────────
             st.subheader("3D Visualization")
@@ -1541,12 +2715,6 @@ with tab1:
             value=st.session_state.vel_mms, step=1.0
         )
         
-        st.session_state.gate_dia = st.slider(
-            "Gate Diameter (mm)",
-            min_value=0.5, max_value=5.0,
-            value=st.session_state.gate_dia, step=0.1
-        )
-        
         st.session_state.etime = st.slider(
             "Simulation End Time (s)",
             min_value=0.1, max_value=5.0,
@@ -1557,8 +2725,8 @@ with tab1:
             st.session_state.mesh_res_mm = 1.0
         st.session_state.mesh_res_mm = st.slider(
             "Voxel Resolution (mm) — 낮을수록 정밀하지만 느림",
-            min_value=0.3, max_value=3.0,
-            value=st.session_state.mesh_res_mm, step=0.1,
+            min_value=0.02, max_value=3.0,
+            value=st.session_state.mesh_res_mm, step=0.02,
             help="0.5mm = 정밀 (메모리 많이 사용) / 1.0mm = 권장 / 2.0mm = 빠름"
         )
 
@@ -1580,40 +2748,56 @@ with tab1:
 
         st.divider()
         
-        # API 연결 상태
-        api_ok = check_api_connection()
+        # API 연결 상태 (캐싱으로 매 렌더링마다 HTTP 요청 안 함)
+        api_ok, api_msg = check_api_connection(ORACLE_API_URL)
         if api_ok:
             st.success("✅ Oracle Cloud API 연결됨")
         else:
-            st.error("❌ Oracle Cloud API 연결 실패")
+            st.warning(f"⚠️ Oracle Cloud API 연결 실패: {api_msg}\n\n"
+                       "Settings 탭에서 API URL/KEY를 확인하세요. "
+                       "연결 실패 상태에서도 제출은 가능합니다.")
         
         # 시뮬레이션 실행
         if st.button("🚀 Run Simulation", use_container_width=True, type="primary"):
-            if not uploaded_file:
+            if not uploaded_file and not st.session_state.get("mesh"):
                 st.error("❌ STL 파일을 먼저 업로드하세요!")
-            elif not api_ok:
-                st.error("❌ Oracle Cloud API에 연결할 수 없습니다!")
             else:
                 with st.spinner("시뮬레이션 제출 중..."):
-                    params = {
-                        "gate_x": st.session_state.gate_x,
-                        "gate_y": st.session_state.gate_y,
-                        "gate_z": st.session_state.gate_z,
-                        "gate_dia": st.session_state.gate_dia,
-                        "vel_mms": st.session_state.vel_mms,
-                        "etime": st.session_state.etime,
-                        "num_frames": 15,
-                        "mesh_res_mm": st.session_state.get("mesh_res_mm", 1.0),
-                    }
-                    
-                    result = submit_simulation(uploaded_file.getbuffer(), params)
-                    
-                    if result:
-                        st.session_state.job_id = result.get("job_id")
-                        st.session_state.sim_status = "submitted"
-                        st.success(f"✅ 시뮬레이션 제출됨 (Job ID: {st.session_state.job_id})")
+                    # 업로드 파일이 있으면 사용, 없으면 기본 파일 사용
+                    if uploaded_file:
+                        stl_bytes = uploaded_file.getbuffer()
                     else:
-                        st.error("❌ 시뮬레이션 제출 실패")
+                        default_stl_path = "/app/input/part.stl"
+                        if os.path.exists(default_stl_path):
+                            with open(default_stl_path, "rb") as f:
+                                stl_bytes = f.read()
+                        else:
+                            st.error("❌ 업로드된 STL 파일이 없습니다!")
+                            stl_bytes = None
+
+                    if stl_bytes:
+                        params = {
+                            "gate_x": st.session_state.gate_x,
+                            "gate_y": st.session_state.gate_y,
+                            "gate_z": st.session_state.gate_z,
+                            "gate_dia":    st.session_state.gate_dia,
+                            "gate_shape":  st.session_state.gate_shape,
+                            "gate_width":  st.session_state.gate_width  if st.session_state.gate_shape == "rectangular" else st.session_state.gate_dia,
+                            "gate_height": st.session_state.gate_height if st.session_state.gate_shape == "rectangular" else st.session_state.gate_dia,
+                            "vel_mms": st.session_state.vel_mms,
+                            "etime": st.session_state.etime,
+                            "num_frames": 15,
+                            "mesh_res_mm": st.session_state.get("mesh_res_mm", 1.0),
+                        }
+                        
+                        result = submit_simulation(stl_bytes, params)
+                        
+                        if result:
+                            st.session_state.job_id = result.get("job_id")
+                            st.session_state.sim_status = "submitted"
+                            st.success(f"✅ 시뮬레이션 제출됨 (Job ID: {st.session_state.job_id})")
+                        else:
+                            st.error("❌ 시뮬레이션 제출 실패 — API 서버 응답을 확인하세요.")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 2: MATERIAL LIBRARY
@@ -1808,7 +2992,7 @@ with tab3:
                                 st.rerun()
 
                     else:
-                        # ── ★ 실패 시: 상세 에러 + 2순위 voxel 뷰어 ─────
+                        # ── ★ 실패 시: 상세 에러 표시 ────────────────────
                         st.warning("⚠️ 프레임 이미지를 서버에서 불러올 수 없습니다.")
                         if frame_err:
                             with st.expander("🔍 오류 상세", expanded=True):
@@ -1857,6 +3041,66 @@ with tab3:
                             st.info("복셀 데이터도 없습니다. "
                                     "서버의 `/api/frames` 또는 `/api/voxels` 엔드포인트를 확인하세요.")
 
+                    # ── ★ 3D WebGL 인터랙티브 뷰어 (항상 표시) ──────────
+                    st.divider()
+                    st.subheader("🧊 3D WebGL 인터랙티브 뷰어")
+                    st.caption(
+                        "STL 형상(wireframe) 위에 복셀이 프레임별로 채워지는 WebGL 뷰어입니다. "
+                        "좌클릭: 회전 | 우클릭·중간버튼: 이동 | Shift+드래그: 이동 | 스크롤: 줌 | 핀치: 줌"
+                    )
+
+                    wv_col1, wv_col2, wv_col3 = st.columns(3)
+                    with wv_col1:
+                        wv_frames = st.slider("프레임 수", 10, 30, 15, 5, key="wv_frames")
+                    with wv_col2:
+                        wv_maxvox = st.slider("최대 복셀 수", 5000, 80000, 30000, 5000, key="wv_maxvox")
+                    with wv_col3:
+                        wv_h = st.slider("뷰어 높이 (px)", 400, 900, 640, 50, key="wv_h")
+
+                    wv_cache_key = f"webgl_{st.session_state.job_id}_{wv_frames}_{wv_maxvox}"
+                    if wv_cache_key not in st.session_state:
+                        with st.spinner("3D WebGL 뷰어 빌드 중 (voxel_data.npz 로드)..."):
+                            wv_coords, wv_weights = get_voxel_data(st.session_state.job_id)
+                            if wv_coords is not None:
+                                stl_mesh = st.session_state.get("mesh", None)
+                                wv_html = build_webgl_flow_viewer(
+                                    wv_coords, wv_weights,
+                                    mesh_trimesh=stl_mesh,
+                                    num_frames=wv_frames,
+                                    max_voxels=wv_maxvox,
+                                    gate_dia_mm=(st.session_state.gate_dia
+                                                 if st.session_state.gate_shape == "circular"
+                                                 else None),
+                                    gate_width_mm=(st.session_state.gate_width
+                                                   if st.session_state.gate_shape == "rectangular"
+                                                   else None),
+                                    gate_height_mm=(st.session_state.gate_height
+                                                    if st.session_state.gate_shape == "rectangular"
+                                                    else None),
+                                )
+                                fill_time_val = results.get(
+                                    "theo_fill_time", results.get("fill_time_s", 1.0)
+                                )
+                                wv_html = wv_html.replace(
+                                    "window.FILL_TIME || 1.0",
+                                    f"window.FILL_TIME || {float(fill_time_val)}"
+                                )
+                                st.session_state[wv_cache_key] = wv_html
+                            else:
+                                st.session_state[wv_cache_key] = None
+
+                    wv_html_out = st.session_state.get(wv_cache_key)
+                    if wv_html_out:
+                        st.components.v1.html(wv_html_out, height=wv_h, scrolling=False)
+                        if st.button("🔄 3D 뷰어 재생성", key="wv_regen"):
+                            del st.session_state[wv_cache_key]
+                            st.rerun()
+                    else:
+                        st.info(
+                            "복셀 데이터를 불러올 수 없습니다. "
+                            "서버의 `/api/voxels/{job_id}` 엔드포인트를 확인하세요."
+                        )
+
                     # 결과 JSON 상세
                     with st.expander("📄 결과 데이터 (JSON)"):
                         if results:
@@ -1878,10 +3122,12 @@ with tab4:
         st.text_input("API Key", value=ORACLE_API_KEY, disabled=True, type="password")
         
         if st.button("🔗 Test Connection"):
-            if check_api_connection():
+            check_api_connection.clear()  # 캐시 강제 초기화 후 재시도
+            ok, msg = check_api_connection(ORACLE_API_URL)
+            if ok:
                 st.success("✅ 연결 성공!")
             else:
-                st.error("❌ 연결 실패!")
+                st.error(f"❌ 연결 실패: {msg}")
     
     with col2:
         st.subheader("Application Info")
