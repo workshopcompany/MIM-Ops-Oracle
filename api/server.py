@@ -242,7 +242,7 @@ def run_solver(job_id, stl_path, params):
 
         # Solver 명령 구성 (절대경로 사용, cwd 불필요)
         cmd = [
-            "python", solver_py,
+            "python3", solver_py,
             "--signal_id", job_id,
             "--stl_path",  stl_abs,          # ★ 절대경로
             "--gate_x",    str(params.get("gate_x", 0.0)),
