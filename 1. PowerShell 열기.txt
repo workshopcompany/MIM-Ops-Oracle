@@ -1,0 +1,43 @@
+1. PowerShell 열기
+
+시작버튼 우클릭 → "Windows PowerShell" 또는 "터미널"
+
+2. 키 파일 있는 폴더로 이동
+powershell
+cd C:\Users\lg\MIM-Ops-Oracle
+
+ssh창 접속(접속하면 ubuntu@noname:/opt/mim-ops/MIM-Ops-Oracle$ )
+ssh -i ssh-key-2026-05-03.key ubuntu@132.145.187.95
+
+streamlit실행
+/opt/mim-ops/MIM-Ops-Oracle/venv/bin/streamlit run app/streamlit_app.py --server.port=8501 --server.address=0.0.0.0
+
+streamlit  경로문제  
+cd /opt/mim-ops/MIM-Ops-Oracle
+sudo /opt/mim-ops/MIM-Ops-Oracle/venv/bin/streamlit run app/streamlit_app.py --server.port=8501 --server.address=0.0.0.0 &
+
+# 기존 Streamlit 종료
+sudo pkill -f streamlit
+
+# 잠깐 대기
+sleep 2
+
+# 재시작
+cd /opt/mim-ops/MIM-Ops-Oracle
+sudo /opt/mim-ops/MIM-Ops-Oracle/venv/bin/streamlit run app/streamlit_app.py --server.port=8501 --server.address=0.0.0.0 &
+
+만약 파일 수정이 있다면
+그럼 push 후 서버 반영은 이 두 줄만 기억하세요:
+cd /opt/mim-ops/MIM-Ops-Oracle
+git pull
+sudo systemctl restart mim-ops-streamlit
+
+
+프로젝트 폴더가 있네요! 이동해서 실행해봐요:
+cd MIM-Ops-Oracle
+ls
+결과 보여주세요!
+앱이 실행 중이네요! 실제 프로젝트는 /opt/mim-ops/MIM-Ops-Oracle/에 있어요.
+API URL 설정 확인:
+cat /opt/mim-ops/MIM-Ops-Oracle/app/streamlit_app.py | grep -E "api|API|url|URL|localhost|5000"
+
