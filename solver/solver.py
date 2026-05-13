@@ -225,6 +225,20 @@ def compute_dijkstra_weights(all_coords, start_indices, res, wall_friction_k=0.0
     return dist_arr / max_d
 
 
+# ════════════════════════════════════════════════════
+# Day 1: 압력분포 계산
+# ════════════════════════════════════════════════════
+
+def calc_pressure(norm_weights: np.ndarray,
+                  P_gate_mpa: float = 80.0) -> np.ndarray:
+    """
+    BFS 가중치(충전 순서)로 압력 분포 역산.
+    게이트(weight=0) = 최고압, 유동선단(weight=1) = 0압
+    """
+    pressure = P_gate_mpa * (1.0 - norm_weights)
+    return pressure.astype(np.float32)
+
+
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
     """
@@ -592,12 +606,16 @@ def main():
     print(f"[Solver] ✅ results.json: {results_json_path}", flush=True)
 
     # npz: norm_weights (원본) + display_weights 모두 저장
+    # Day 1: pressure 필드 추가
+    pressure_map = calc_pressure(norm_weights, P_gate_mpa=args.press)
+
     npz_path = os.path.join(result_dir, "voxel_data.npz")
     np.savez_compressed(
         npz_path,
         coords=all_coords.astype(np.float32),
         weights=norm_weights.astype(np.float32),
-        display_weights=display_weights.astype(np.float32),  # ★ 추가
+        display_weights=display_weights.astype(np.float32),  # ★ 기존 유지
+        pressure=pressure_map,                                # ★ Day 1 신규
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
