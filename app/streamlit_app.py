@@ -2203,14 +2203,14 @@ with tab_phase1:
 
         if at_cnt > 0:
             at_coords = coords_arr[at_arr]
-            non_at    = coords_arr[~at_arr][::max(1, int(len(coords_arr) / 2000))]
+            non_at    = coords_arr[~at_arr][::max(1, int(len(coords_arr) / 4000))]
             import plotly.graph_objects as go
             fig = go.Figure()
             fig.add_trace(go.Scatter3d(
                 x=non_at[:, 0], y=non_at[:, 1], z=non_at[:, 2],
                 mode='markers',
-                marker=dict(size=1.5, color='#1a4a7a', opacity=0.2),
-                name='일반 복셀'
+                marker=dict(size=2.5, color='#4a90d9', opacity=0.55),
+                name='파트 형상'
             ))
             fig.add_trace(go.Scatter3d(
                 x=at_coords[:, 0], y=at_coords[:, 1], z=at_coords[:, 2],
