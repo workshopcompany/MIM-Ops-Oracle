@@ -796,6 +796,168 @@ def get_voxel_data(job_id: str):
         st.warning(f"복셀 데이터 조회 오류: {e}")
         return None, None
 
+def get_voxel_data_full(job_id: str) -> dict | None:
+    """
+    voxel_data.npz의 모든 필드를 dict로 반환.
+    Phase 탭 전용. 기존 get_voxel_data()는 건드리지 않음.
+    """
+    try:
+        url     = f"{ORACLE_API_URL}/api/voxels/{job_id}"
+        headers = {"Authorization": f"Bearer {ORACLE_API_KEY}"}
+        response = requests.get(url, headers=headers, timeout=60)
+        if response.status_code != 200:
+            return None
+        import io
+        buf = io.BytesIO(response.content)
+        npz = np.load(buf)
+        result = {}
+        for key in npz.files:
+            result[key] = npz[key].astype(np.float32)
+        return result  # {"coords": ..., "weights": ..., "display_weights": ..., "pressure": ...}
+    except Exception as e:
+        st.warning(f"복셀 전체 데이터 조회 오류: {e}")
+        return None
+
+
+def build_webgl_pressure_viewer(
+    coords: np.ndarray,
+    pressure_norm: np.ndarray,
+    max_points: int = 8000,
+) -> str:
+    """
+    압력 분포 전용 3D 정적 뷰어.
+    색상: 파랑(저압) → 초록(중압) → 빨강(고압)
+    """
+    import json as _json
+
+    N = len(coords)
+    if N == 0:
+        return "<p>복셀 데이터 없음</p>"
+
+    if N > max_points:
+        idx      = np.linspace(0, N - 1, max_points, dtype=int)
+        coords_s = coords[idx]
+        p_norm_s = pressure_norm[idx]
+    else:
+        coords_s = coords
+        p_norm_s = pressure_norm
+
+    c_min    = coords_s.min(axis=0)
+    c_max    = coords_s.max(axis=0)
+    scale    = float(np.maximum(c_max - c_min, 1e-6).max())
+    center   = (c_min + c_max) / 2.0
+    coords_n = ((coords_s - center) / scale * 2.0).astype(np.float32)
+
+    xyzp      = np.column_stack([coords_n, p_norm_s])
+    xyzp_json = _json.dumps([[round(float(v), 3) for v in row] for row in xyzp])
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#07101f;font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
+canvas{{display:block;width:100%;height:100%;cursor:grab}}
+canvas:active{{cursor:grabbing}}
+#hud{{position:absolute;top:10px;left:12px;font-size:11px;
+      background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
+      border-radius:6px;padding:6px 12px;line-height:1.8;pointer-events:none}}
+#legend{{position:absolute;bottom:40px;right:12px;font-size:10px;
+         background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
+         border-radius:6px;padding:6px 10px}}
+#legend canvas{{width:120px;height:12px;display:block;margin-bottom:3px}}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div><span style="color:#557a99">압력 분포 </span><span style="color:#ff4444">■</span>고압 →
+       <span style="color:#4444ff">■</span>저압</div>
+  <div style="font-size:9px;color:#33556e;margin-top:4px">
+    좌클릭:회전 | 스크롤:줌 | 우클릭:이동</div>
+</div>
+<div id="legend">
+  <canvas id="legCvs" width="120" height="12"></canvas>
+  <div style="display:flex;justify-content:space-between;color:#557a99">
+    <span>저압</span><span>고압</span></div>
+</div>
+<script>
+const XYZP = {xyzp_json};
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W=0, H=0;
+function resize(){{W=canvas.width=canvas.clientWidth;H=canvas.height=canvas.clientHeight;}}
+window.addEventListener('resize',()=>{{resize();draw();}});
+resize();
+
+function pressColor(p){{
+  const r = p < 0.5 ? Math.round(p*2*30) : Math.round(30 + (p-0.5)*2*225);
+  const g = p < 0.5 ? Math.round(p*2*220) : Math.round(220 - (p-0.5)*2*180);
+  const b = p < 0.5 ? Math.round(255 - p*2*225) : Math.round(30);
+  return `rgb(${{r}},${{g}},${{b}})`;
+}}
+
+(function(){{
+  const lc = document.getElementById('legCvs');
+  const lx = lc.getContext('2d');
+  const grd = lx.createLinearGradient(0,0,120,0);
+  grd.addColorStop(0,'rgb(30,30,255)');
+  grd.addColorStop(0.5,'rgb(30,220,30)');
+  grd.addColorStop(1,'rgb(255,30,30)');
+  lx.fillStyle=grd; lx.fillRect(0,0,120,12);
+}})();
+
+let rotX=0.35, rotY=-0.5, zoom=1.0, panX=0, panY=0;
+let isDrag=false, isPan=false, lastMX=0, lastMY=0;
+
+function project(x,y,z){{
+  const x1 =  x*Math.cos(rotY)+z*Math.sin(rotY);
+  const z1 = -x*Math.sin(rotY)+z*Math.cos(rotY);
+  const y2 =  y*Math.cos(rotX)-z1*Math.sin(rotX);
+  const z2 =  y*Math.sin(rotX)+z1*Math.cos(rotX);
+  const fov=2.8*zoom, d=3.5+z2;
+  if(d<0.01) return null;
+  return [W/2+panX+(x1*fov/d)*W*0.42, H/2+panY-(y2*fov/d)*W*0.42, z2];
+}}
+
+function draw(){{
+  ctx.clearRect(0,0,W,H);
+  const grd=ctx.createLinearGradient(0,0,0,H);
+  grd.addColorStop(0,'#0f172a'); grd.addColorStop(1,'#1e293b');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+
+  const pts = XYZP.map(r=>{{
+    const p=project(r[0],r[1],r[2]);
+    return p ? {{sx:p[0],sy:p[1],depth:p[2],pv:r[3]}} : null;
+  }}).filter(Boolean).sort((a,b)=>a.depth-b.depth);
+
+  pts.forEach(pt=>{{
+    ctx.beginPath();
+    ctx.arc(pt.sx, pt.sy, 2.5, 0, Math.PI*2);
+    ctx.fillStyle = pressColor(pt.pv);
+    ctx.fill();
+  }});
+}}
+
+canvas.addEventListener('mousedown',e=>{{
+  isDrag=true; isPan=(e.button===2||e.button===1||e.shiftKey);
+  lastMX=e.clientX; lastMY=e.clientY; e.preventDefault();
+}});
+window.addEventListener('mouseup',()=>{{isDrag=false; isPan=false;}});
+window.addEventListener('mousemove',e=>{{
+  if(!isDrag) return;
+  const dx=e.clientX-lastMX, dy=e.clientY-lastMY;
+  lastMX=e.clientX; lastMY=e.clientY;
+  if(isPan){{ panX+=dx; panY+=dy; }}
+  else{{ rotY-=dx*0.01; rotX+=dy*0.01; }}
+  draw();
+}});
+canvas.addEventListener('wheel',e=>{{
+  e.preventDefault();
+  zoom=Math.max(0.3,Math.min(5,zoom*(e.deltaY>0?0.93:1.08)));
+  draw();
+}},{{passive:false}});
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+draw();
+</script></body></html>"""
+    return html
+
 
 def build_webgl_flow_viewer(
     coords: np.ndarray, weights: np.ndarray,
@@ -1274,7 +1436,12 @@ resize();updateUI();
 # UI — 탭 구조
 # ═══════════════════════════════════════════════════════════
 
-tab1, tab2, tab3, tab4 = st.tabs(["Simulation", "Material Library", "Results", "Settings"])
+tab1, tab2, tab3, tab4, tab_phase1, tab_phase2, tab_phase3 = st.tabs([
+    "Simulation", "Material Library", "Results", "Settings",
+    "🔴 압력·웰드·에어트랩",   # Phase 1 (Day 1~3)
+    "🌡 온도·냉각",            # Phase 2 (Day 4~5)
+    "📐 수축·변형",            # Phase 3 (Day 6~7)
+])
 
 # ═══════════════════════════════════════════════════════════
 # TAB 1: SIMULATION
@@ -1913,6 +2080,76 @@ with tab4:
             "• Real-time Simulation Monitoring\n"
             "• Wall Friction & Flow Decay Control ★"
         )
+
+# ═══════════════════════════════════════════════════════════
+# TAB PHASE 1: 압력·웰드·에어트랩
+# ═══════════════════════════════════════════════════════════
+with tab_phase1:
+    st.header("🔴 압력 분포 / 웰드라인 / 에어트랩")
+
+    if not st.session_state.get("job_id"):
+        st.info("먼저 [Simulation] 탭에서 시뮬레이션을 실행하세요.")
+        st.stop()
+
+    job_id    = st.session_state.job_id
+    cache_key = f"voxel_full_{job_id}"
+
+    if cache_key not in st.session_state:
+        with st.spinner("해석 데이터 로드 중..."):
+            st.session_state[cache_key] = get_voxel_data_full(job_id)
+
+    vdata = st.session_state.get(cache_key)
+
+    # ── 압력 분포 섹션 ──
+    st.subheader("🔴 압력 분포")
+    st.caption("게이트(최고압) → 유동선단(0압) / BFS 가중치 역산")
+
+    if vdata is not None and "pressure" in vdata:
+        pressure_arr = vdata["pressure"]
+        coords_arr   = vdata["coords"]
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("최대 압력", f"{pressure_arr.max():.1f} MPa")
+        col2.metric("평균 압력", f"{pressure_arr.mean():.1f} MPa")
+        col3.metric("최소 압력", f"{pressure_arr.min():.1f} MPa")
+
+        p_norm   = (pressure_arr - pressure_arr.min()) / (
+            pressure_arr.max() - pressure_arr.min() + 1e-6
+        )
+        p_height = st.slider("뷰어 높이", 400, 900, 600, 50, key="p1_h")
+        html_p   = build_webgl_pressure_viewer(coords_arr, p_norm)
+        components.html(html_p, height=p_height, scrolling=False)
+
+        import plotly.express as px
+        st.subheader("압력 분포 히스토그램")
+        fig = px.histogram(
+            x=pressure_arr, nbins=30,
+            labels={"x": "압력 (MPa)", "y": "복셀 수"},
+            color_discrete_sequence=["#4488ff"]
+        )
+        fig.update_layout(paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                          font_color="#8ecfff")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("압력 데이터 없음. 시뮬레이션을 재실행하세요 (Day 1 solver 필요).")
+
+    # ── 웰드라인 · 에어트랩은 Day 2~3에 여기 추가 ──
+    st.divider()
+    st.caption("🔧 웰드라인 (Day 2) / 에어트랩 (Day 3) 순차 추가 예정")
+
+# ═══════════════════════════════════════════════════════════
+# TAB PHASE 2: 온도·냉각 (Day 4~5에 구현)
+# ═══════════════════════════════════════════════════════════
+with tab_phase2:
+    st.header("🌡 온도 분포 / 냉각 해석")
+    st.info("Day 4~5 작업 후 활성화됩니다.")
+
+# ═══════════════════════════════════════════════════════════
+# TAB PHASE 3: 수축·변형 (Day 6~7에 구현)
+# ═══════════════════════════════════════════════════════════
+with tab_phase3:
+    st.header("📐 수축률 / 변형 예측")
+    st.info("Day 6~7 작업 후 활성화됩니다.")
 
 # ── Footer ──
 st.divider()
