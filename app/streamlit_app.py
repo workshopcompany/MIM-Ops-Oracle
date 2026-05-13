@@ -2133,9 +2133,52 @@ with tab_phase1:
     else:
         st.warning("압력 데이터 없음. 시뮬레이션을 재실행하세요 (Day 1 solver 필요).")
 
-    # ── 웰드라인 · 에어트랩은 Day 2~3에 여기 추가 ──
+    # ── 웰드라인 섹션 ──
     st.divider()
-    st.caption("🔧 웰드라인 (Day 2) / 에어트랩 (Day 3) 순차 추가 예정")
+    st.subheader("🟡 웰드라인")
+    st.caption("서로 반대 방향 유동이 만나는 지점 — 강도 취약 위험 구간")
+
+    if vdata is not None and "weld" in vdata:
+        weld_arr  = vdata["weld"].astype(bool)
+        weld_cnt  = int(weld_arr.sum())
+        total_cnt = len(weld_arr)
+        weld_pct  = weld_cnt / max(total_cnt, 1) * 100
+
+        col1, col2 = st.columns(2)
+        col1.metric("웰드라인 복셀 수", f"{weld_cnt:,}")
+        col2.metric("전체 대비 비율",   f"{weld_pct:.2f}%")
+
+        if weld_cnt > 0:
+            weld_coords = coords_arr[weld_arr]
+            import plotly.graph_objects as go
+            non_weld = coords_arr[~weld_arr][::max(1, int((total_cnt - weld_cnt) / 3000))]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter3d(
+                x=non_weld[:, 0], y=non_weld[:, 1], z=non_weld[:, 2],
+                mode='markers',
+                marker=dict(size=1.5, color='#1a4a7a', opacity=0.3),
+                name='일반 복셀'
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=weld_coords[:, 0], y=weld_coords[:, 1], z=weld_coords[:, 2],
+                mode='markers',
+                marker=dict(size=3.5, color='#ffdd00', opacity=0.9),
+                name='웰드라인'
+            ))
+            fig.update_layout(
+                scene=dict(bgcolor='#07101f'),
+                paper_bgcolor='#07101f', font_color='#8ecfff',
+                margin=dict(l=0, r=0, b=0, t=0), height=500,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.success("✅ 웰드라인 없음 (양호)")
+    else:
+        st.warning("웰드라인 데이터 없음. Day 2 solver로 시뮬레이션을 재실행하세요.")
+
+    # ── 에어트랩은 Day 3에 추가 ──
+    st.divider()
+    st.caption("🔧 에어트랩 (Day 3) 추가 예정")
 
 # ═══════════════════════════════════════════════════════════
 # TAB PHASE 2: 온도·냉각 (Day 4~5에 구현)
