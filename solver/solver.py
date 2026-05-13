@@ -699,9 +699,6 @@ def main():
         "Rec Res 24GB (mm)":    rec_24,
         "wall_friction_k":      args.wall_friction_k,          # ★ 추가
         "flow_decay":           args.flow_decay,               # ★ 추가
-        # Day 3: 에어트랩 결과
-        "airtrap_count":        int(airtrap_flags.sum()),      # ★ Day 3 신규
-        "vent_positions":       vent_positions,                 # ★ Day 3 신규
         "Note": (
             "Frames use display_weights (flow_decay applied). "
             "norm_weights in npz are raw Dijkstra output."
@@ -709,13 +706,8 @@ def main():
         "voxel_data_file": "voxel_data.npz",
     }
 
-    results_json_path = os.path.join(result_dir, "results.json")
-    with open(results_json_path, "w") as fh:
-        json.dump(results, fh, indent=4)
-    print(f"[Solver] ✅ results.json: {results_json_path}", flush=True)
-
-    # npz: norm_weights (원본) + display_weights 모두 저장
-    # Day 1: pressure 필드 추가
+    # ── Day 1~3 감지: results dict 이후, json 저장 이전 ──────────
+    # Day 1: 압력 계산
     pressure_map = calc_pressure(norm_weights, P_gate_mpa=args.press)
 
     # Day 2: 웰드라인 감지
@@ -728,6 +720,15 @@ def main():
     airtrap_flags  = detect_airtraps(all_coords, norm_weights, res)
     vent_positions = recommend_vents(all_coords, airtrap_flags, top_n=5)
     print(f"[Solver] Airtrap voxels: {int(airtrap_flags.sum()):,} | Vents: {len(vent_positions)}", flush=True)
+
+    # Day 3 결과를 results dict에 추가
+    results["airtrap_count"]  = int(airtrap_flags.sum())
+    results["vent_positions"] = vent_positions
+
+    results_json_path = os.path.join(result_dir, "results.json")
+    with open(results_json_path, "w") as fh:
+        json.dump(results, fh, indent=4)
+    print(f"[Solver] ✅ results.json: {results_json_path}", flush=True)
 
     npz_path = os.path.join(result_dir, "voxel_data.npz")
     np.savez_compressed(
