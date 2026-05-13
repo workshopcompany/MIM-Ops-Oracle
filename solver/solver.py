@@ -292,6 +292,59 @@ def detect_weld_lines(
     return weld_flags
 
 
+# ════════════════════════════════════════════════════
+# Day 3: 에어트랩 감지 + 벤트 추천
+# ════════════════════════════════════════════════════
+
+def detect_airtraps(
+    coords: np.ndarray,
+    norm_weights: np.ndarray,
+    res: float,
+    late_fill_threshold: float = 0.90,
+) -> np.ndarray:
+    """
+    충전이 가장 늦은 복셀(norm_weight > threshold) 중
+    표면에 가까운 복셀 = 에어트랩 후보
+    반환: airtrap_flags (N,) bool
+    """
+    from scipy.spatial import cKDTree
+
+    late_mask = norm_weights > late_fill_threshold
+    if not late_mask.any():
+        return np.zeros(len(coords), dtype=bool)
+
+    tree  = cKDTree(coords)
+    pairs = tree.query_pairs(r=res * 1.85)
+    cnt   = np.zeros(len(coords), dtype=int)
+    for i, j in pairs:
+        cnt[i] += 1
+        cnt[j] += 1
+    # 이웃이 26개 미만이면 표면 복셀
+    surface_mask   = cnt < 26
+    airtrap_flags  = late_mask & surface_mask
+    return airtrap_flags
+
+
+def recommend_vents(
+    coords: np.ndarray,
+    airtrap_flags: np.ndarray,
+    top_n: int = 5,
+) -> list:
+    """에어트랩 클러스터 중심 좌표 → 벤트 추천 위치 (그리디 최대 분산)"""
+    if not airtrap_flags.any():
+        return []
+    at_coords = coords[airtrap_flags]
+    top_n     = min(top_n, len(at_coords))
+    vents     = [at_coords[0]]
+    for _ in range(top_n - 1):
+        dists = np.array([
+            min(np.linalg.norm(c - v) for v in vents)
+            for c in at_coords
+        ])
+        vents.append(at_coords[np.argmax(dists)])
+    return [v.tolist() for v in vents]
+
+
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
     """
@@ -646,6 +699,9 @@ def main():
         "Rec Res 24GB (mm)":    rec_24,
         "wall_friction_k":      args.wall_friction_k,          # ★ 추가
         "flow_decay":           args.flow_decay,               # ★ 추가
+        # Day 3: 에어트랩 결과
+        "airtrap_count":        int(airtrap_flags.sum()),      # ★ Day 3 신규
+        "vent_positions":       vent_positions,                 # ★ Day 3 신규
         "Note": (
             "Frames use display_weights (flow_decay applied). "
             "norm_weights in npz are raw Dijkstra output."
@@ -667,6 +723,12 @@ def main():
     weld_flags = detect_weld_lines(all_coords, norm_weights, res)
     print(f"[Solver] Weld line voxels: {int(weld_flags.sum()):,}", flush=True)
 
+    # Day 3: 에어트랩 감지 + 벤트 추천
+    print("[Solver] Detecting airtraps...", flush=True)
+    airtrap_flags  = detect_airtraps(all_coords, norm_weights, res)
+    vent_positions = recommend_vents(all_coords, airtrap_flags, top_n=5)
+    print(f"[Solver] Airtrap voxels: {int(airtrap_flags.sum()):,} | Vents: {len(vent_positions)}", flush=True)
+
     npz_path = os.path.join(result_dir, "voxel_data.npz")
     np.savez_compressed(
         npz_path,
@@ -674,7 +736,8 @@ def main():
         weights=norm_weights.astype(np.float32),
         display_weights=display_weights.astype(np.float32),  # ★ 기존 유지
         pressure=pressure_map,                                # ★ Day 1 유지
-        weld=weld_flags.astype(np.uint8),                    # ★ Day 2 신규
+        weld=weld_flags.astype(np.uint8),                    # ★ Day 2 유지
+        airtrap=airtrap_flags.astype(np.uint8),              # ★ Day 3 신규
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
