@@ -2178,7 +2178,66 @@ with tab_phase1:
 
     # ── 에어트랩은 Day 3에 추가 ──
     st.divider()
-    st.caption("🔧 에어트랩 (Day 3) 추가 예정")
+    st.subheader("🔵 에어트랩 + 벤트 추천")
+    st.caption("충전 말기에 공기가 갇히는 위험 구간 — 표면 근처 + 충전 늦은 복셀")
+
+    if vdata is not None and "airtrap" in vdata:
+        at_arr = vdata["airtrap"].astype(bool)
+        at_cnt = int(at_arr.sum())
+
+        col1, col2 = st.columns(2)
+        col1.metric("에어트랩 복셀", f"{at_cnt:,}")
+        col2.metric("위험도", "⚠️ 높음" if at_cnt > 50 else "✅ 낮음")
+
+        # 벤트 추천 위치 (results.json에서)
+        last_result  = st.session_state.get("last_result", {})
+        vent_pos     = last_result.get("results", {}).get("vent_positions", [])
+        airtrap_cnt_r = last_result.get("results", {}).get("airtrap_count", None)
+
+        if vent_pos:
+            st.markdown("**📍 추천 벤트 위치:**")
+            for i, v in enumerate(vent_pos):
+                st.markdown(
+                    f"- 벤트 {i+1}: X={v[0]:.2f} mm, Y={v[1]:.2f} mm, Z={v[2]:.2f} mm"
+                )
+
+        if at_cnt > 0:
+            at_coords = coords_arr[at_arr]
+            non_at    = coords_arr[~at_arr][::max(1, int(len(coords_arr) / 2000))]
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            fig.add_trace(go.Scatter3d(
+                x=non_at[:, 0], y=non_at[:, 1], z=non_at[:, 2],
+                mode='markers',
+                marker=dict(size=1.5, color='#1a4a7a', opacity=0.2),
+                name='일반 복셀'
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=at_coords[:, 0], y=at_coords[:, 1], z=at_coords[:, 2],
+                mode='markers',
+                marker=dict(size=4, color='#00ccff', opacity=0.9),
+                name='에어트랩'
+            ))
+            if vent_pos:
+                vp = np.array(vent_pos)
+                fig.add_trace(go.Scatter3d(
+                    x=vp[:, 0], y=vp[:, 1], z=vp[:, 2],
+                    mode='markers+text',
+                    marker=dict(size=8, color='#ff6600', symbol='diamond', opacity=1.0),
+                    text=[f"V{i+1}" for i in range(len(vp))],
+                    textposition='top center',
+                    name='추천 벤트'
+                ))
+            fig.update_layout(
+                scene=dict(bgcolor='#07101f'),
+                paper_bgcolor='#07101f', font_color='#8ecfff',
+                margin=dict(l=0, r=0, b=0, t=0), height=500,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.success("✅ 에어트랩 없음 (양호)")
+    else:
+        st.warning("에어트랩 데이터 없음. Day 3 solver로 시뮬레이션을 재실행하세요.")
 
 # ═══════════════════════════════════════════════════════════
 # TAB PHASE 2: 온도·냉각 (Day 4~5에 구현)
