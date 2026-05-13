@@ -239,6 +239,59 @@ def calc_pressure(norm_weights: np.ndarray,
     return pressure.astype(np.float32)
 
 
+# ════════════════════════════════════════════════════
+# Day 2: 웰드라인 감지
+# ════════════════════════════════════════════════════
+
+def detect_weld_lines(
+    coords: np.ndarray,
+    norm_weights: np.ndarray,
+    res: float,
+    time_tolerance: float = 0.05,
+) -> np.ndarray:
+    """
+    서로 반대 방향에서 거의 동시에 만나는 복셀 = 웰드라인.
+    100K 미만 복셀: 전체 검사 / 100K 이상: 10% 샘플링
+    반환: weld_flags (N,) bool
+    """
+    from scipy.spatial import cKDTree
+
+    total_n  = len(coords)
+    gate_idx = int(np.argmin(norm_weights))
+    gate_pos = coords[gate_idx]
+    tree     = cKDTree(coords)
+    weld_flags = np.zeros(total_n, dtype=bool)
+
+    # 100K 미만이면 전체 검사, 이상이면 10% 샘플링
+    if total_n < 100_000:
+        check_idx = np.arange(total_n)
+        print(f"[Solver] Weld line: 전체 검사 ({total_n:,} voxels)", flush=True)
+    else:
+        sample_size = total_n // 10
+        check_idx   = np.random.choice(total_n, size=sample_size, replace=False)
+        print(f"[Solver] Weld line: 10% 샘플링 ({sample_size:,} / {total_n:,} voxels)", flush=True)
+
+    for i in check_idx:
+        neighbors = tree.query_ball_point(coords[i], r=res * 1.9)
+        vec_i  = coords[i] - gate_pos
+        norm_i = np.linalg.norm(vec_i) + 1e-8
+        vec_i  /= norm_i
+
+        for j in neighbors:
+            if j <= i:
+                continue
+            if abs(norm_weights[i] - norm_weights[j]) > time_tolerance:
+                continue
+            vec_j  = coords[j] - gate_pos
+            norm_j = np.linalg.norm(vec_j) + 1e-8
+            vec_j  /= norm_j
+            if np.dot(vec_i, vec_j) < -0.3:   # 약 107도 이상 반대방향
+                weld_flags[i] = True
+                weld_flags[j] = True
+
+    return weld_flags
+
+
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
     """
@@ -609,13 +662,19 @@ def main():
     # Day 1: pressure 필드 추가
     pressure_map = calc_pressure(norm_weights, P_gate_mpa=args.press)
 
+    # Day 2: 웰드라인 감지
+    print("[Solver] Detecting weld lines...", flush=True)
+    weld_flags = detect_weld_lines(all_coords, norm_weights, res)
+    print(f"[Solver] Weld line voxels: {int(weld_flags.sum()):,}", flush=True)
+
     npz_path = os.path.join(result_dir, "voxel_data.npz")
     np.savez_compressed(
         npz_path,
         coords=all_coords.astype(np.float32),
         weights=norm_weights.astype(np.float32),
         display_weights=display_weights.astype(np.float32),  # ★ 기존 유지
-        pressure=pressure_map,                                # ★ Day 1 신규
+        pressure=pressure_map,                                # ★ Day 1 유지
+        weld=weld_flags.astype(np.uint8),                    # ★ Day 2 신규
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
