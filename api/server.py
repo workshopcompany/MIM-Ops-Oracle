@@ -205,9 +205,11 @@ def run_solver(job_id, stl_path, params):
         #   2) /app/solver/solver.py  (Docker 표준 경로)
         #   3) /app/solver.py
         server_dir  = os.path.dirname(os.path.abspath(__file__))
+        repo_root   = os.path.dirname(server_dir)  # api/ 의 상위 = 저장소 루트
         solver_candidates = [
-            os.path.join(server_dir, "solver", "solver.py"),
-            os.path.join(server_dir, "solver.py"),
+            os.path.join(repo_root,   "solver", "solver.py"),  # ★ 실제 운영 경로
+            os.path.join(server_dir,  "solver", "solver.py"),
+            os.path.join(server_dir,  "solver.py"),
             "/app/solver/solver.py",
             "/app/solver.py",
         ]
