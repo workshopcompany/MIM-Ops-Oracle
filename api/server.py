@@ -243,18 +243,23 @@ def run_solver(job_id, stl_path, params):
         # Solver 명령 구성 (절대경로 사용, cwd 불필요)
         cmd = [
             "python3", solver_py,
-            "--signal_id", job_id,
-            "--stl_path",  stl_abs,          # ★ 절대경로
-            "--gate_x",    str(params.get("gate_x", 0.0)),
-            "--gate_y",    str(params.get("gate_y", 0.0)),
-            "--gate_z",    str(params.get("gate_z", 0.0)),
-            "--gate_dia",  str(params.get("gate_dia", 2.0)),
-            "--vel_mms",   str(params.get("vel_mms", 25.0)),
-            "--etime",     str(params.get("etime", 1.0)),
-            "--num_frames",str(params.get("num_frames", 15)),
-            "--mesh_res_mm",str(params.get("mesh_res_mm", 0.5)),
-            "--material",  str(params.get("material", "17-4PH")),
-            "--screw_dia", str(params.get("screw_dia", 28.0)),
+            "--signal_id",       job_id,
+            "--stl_path",        stl_abs,          # ★ 절대경로
+            "--gate_x",          str(params.get("gate_x", 0.0)),
+            "--gate_y",          str(params.get("gate_y", 0.0)),
+            "--gate_z",          str(params.get("gate_z", 0.0)),
+            "--gate_dia",        str(params.get("gate_dia", 2.0)),
+            "--vel_mms",         str(params.get("vel_mms", 25.0)),
+            "--etime",           str(params.get("etime", 1.0)),
+            "--num_frames",      str(params.get("num_frames", 15)),
+            "--mesh_res_mm",     str(params.get("mesh_res_mm", 0.5)),
+            "--material",        str(params.get("material", "17-4PH")),
+            "--screw_dia",       str(params.get("screw_dia", 28.0)),
+            # ── Bug Fix Day 0: 기존에 누락된 파라미터 추가 ──
+            "--wall_friction_k", str(params.get("wall_friction_k", 3.0)),
+            "--flow_decay",      str(params.get("flow_decay", 0.5)),
+            "--press",           str(params.get("press", 110.0)),
+            "--temp",            str(params.get("temp", 185.0)),
         ]
 
         import re
@@ -426,17 +431,22 @@ def submit_simulation():
         try:
             data = request.form.to_dict()
             params = {
-                "signal_id": data.get("signal_id", "auto"),
-                "gate_x": float(data.get("gate_x", 0.0)),
-                "gate_y": float(data.get("gate_y", 0.0)),
-                "gate_z": float(data.get("gate_z", 0.0)),
-                "gate_dia": float(data.get("gate_dia", 2.0)),
-                "vel_mms": float(data.get("vel_mms", 25.0)),
-                "etime": float(data.get("etime", 1.0)),
-                "num_frames": int(data.get("num_frames", 15)),
-                "mesh_res_mm": float(data.get("mesh_res_mm", 0.5)),
-                "material": data.get("material", "17-4PH"),
-                "screw_dia": float(data.get("screw_dia", 28.0)),
+                "signal_id":       data.get("signal_id", "auto"),
+                "gate_x":          float(data.get("gate_x", 0.0)),
+                "gate_y":          float(data.get("gate_y", 0.0)),
+                "gate_z":          float(data.get("gate_z", 0.0)),
+                "gate_dia":        float(data.get("gate_dia", 2.0)),
+                "vel_mms":         float(data.get("vel_mms", 25.0)),
+                "etime":           float(data.get("etime", 1.0)),
+                "num_frames":      int(data.get("num_frames", 15)),
+                "mesh_res_mm":     float(data.get("mesh_res_mm", 0.5)),
+                "material":        data.get("material", "17-4PH"),
+                "screw_dia":       float(data.get("screw_dia", 28.0)),
+                # ── Bug Fix Day 0: 기존에 누락된 파라미터 추가 ──
+                "wall_friction_k": float(data.get("wall_friction_k", 3.0)),
+                "flow_decay":      float(data.get("flow_decay", 0.5)),
+                "press":           float(data.get("press", 110.0)),
+                "temp":            float(data.get("temp", 185.0)),
             }
         except (ValueError, TypeError) as e:
             return jsonify({"error": f"Invalid parameters: {e}"}), 400
