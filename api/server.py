@@ -205,11 +205,9 @@ def run_solver(job_id, stl_path, params):
         #   2) /app/solver/solver.py  (Docker 표준 경로)
         #   3) /app/solver.py
         server_dir  = os.path.dirname(os.path.abspath(__file__))
-        repo_root   = os.path.dirname(server_dir)  # api/ 의 상위 = 저장소 루트
         solver_candidates = [
-            os.path.join(repo_root,   "solver", "solver.py"),  # ★ 실제 운영 경로
-            os.path.join(server_dir,  "solver", "solver.py"),
-            os.path.join(server_dir,  "solver.py"),
+            os.path.join(server_dir, "solver", "solver.py"),
+            os.path.join(server_dir, "solver.py"),
             "/app/solver/solver.py",
             "/app/solver.py",
         ]
@@ -243,8 +241,11 @@ def run_solver(job_id, stl_path, params):
             return
 
         # Solver 명령 구성 (절대경로 사용, cwd 불필요)
+        # venv python 사용 (시스템 python3은 패키지 없음)
+        venv_python = os.path.join(repo_root, "venv", "bin", "python")
+        python_exe  = venv_python if os.path.isfile(venv_python) else "python3"
         cmd = [
-            "python3", solver_py,
+            python_exe, solver_py,
             "--signal_id",       job_id,
             "--stl_path",        stl_abs,          # ★ 절대경로
             "--gate_x",          str(params.get("gate_x", 0.0)),
