@@ -5,11 +5,6 @@ Changelog (solver_updated.py integration):
   ★ Two parameters added to session_state initialization
   ★ Two parameters added to submit_simulation params dict
   ★ Two parameters added to submit_simulation data payload
-
-Bug fixes:
-  ✅ tab_phase2 / tab_phase3 indentation corrected (were nested inside tab_phase1)
-  ✅ sint_pct "~" character now stripped before float() conversion
-  ✅ plotly imports moved to top level
 """
 
 import streamlit as st
@@ -23,8 +18,6 @@ from datetime import datetime
 import trimesh
 import streamlit.components.v1 as components
 import base64
-import plotly.express as px
-import plotly.graph_objects as go
 
 # ═══════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -214,6 +207,31 @@ def list_available_materials() -> list:
 # 3D VISUALIZATION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
+def _repair_mesh(mesh):
+    """
+    STL 메시를 contains() 판별에 신뢰할 수 있도록 복구.
+    trimesh.contains()는 메시가 watertight(닫힌 솔리드)일 때만 정확하다.
+    1. 중복 vertex/face 제거
+    2. 법선 방향 통일 (fix_normals)
+    3. 구멍 메우기 (fill_holes)
+    4. 그래도 watertight 아니면 convex hull fallback
+    """
+    try:
+        mesh.merge_vertices()
+        mesh.remove_duplicate_faces()
+        mesh.remove_degenerate_faces()
+        trimesh.repair.fix_winding(mesh)
+        trimesh.repair.fix_normals(mesh)
+        trimesh.repair.fill_holes(mesh)
+        if not mesh.is_watertight:
+            hull = mesh.convex_hull
+            if hull.volume <= mesh.bounding_box.volume * 1.5:
+                mesh = hull
+    except Exception:
+        pass
+    return mesh
+
+
 def load_stl_file(uploaded_file):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
@@ -221,15 +239,15 @@ def load_stl_file(uploaded_file):
             tmp_path = tmp.name
         mesh = trimesh.load(tmp_path, force='mesh')
         if isinstance(mesh, trimesh.base.Trimesh) and len(mesh.faces) > 0:
-            return mesh
+            return _repair_mesh(mesh)
         loaded = trimesh.load(tmp_path)
         if isinstance(loaded, trimesh.base.Trimesh) and len(loaded.faces) > 0:
-            return loaded
+            return _repair_mesh(loaded)
         elif hasattr(loaded, 'geometry') and loaded.geometry:
             geom_list = [g for g in loaded.geometry.values()
                          if isinstance(g, trimesh.base.Trimesh) and len(g.faces) > 0]
             if geom_list:
-                return trimesh.util.concatenate(geom_list)
+                return _repair_mesh(trimesh.util.concatenate(geom_list))
         st.error("Could not read mesh from STL file. Please check the file.")
         return None
     except Exception as e:
@@ -803,7 +821,6 @@ def get_voxel_data(job_id: str):
         st.warning(f"Voxel data fetch error: {e}")
         return None, None
 
-
 def get_voxel_data_full(job_id: str) -> dict | None:
     """
     Return all fields from voxel_data.npz as a dict.
@@ -821,7 +838,7 @@ def get_voxel_data_full(job_id: str) -> dict | None:
         result = {}
         for key in npz.files:
             result[key] = npz[key].astype(np.float32)
-        return result
+        return result  # {"coords": ..., "weights": ..., "display_weights": ..., "pressure": ...}
     except Exception as e:
         st.warning(f"Full voxel data fetch error: {e}")
         return None
@@ -831,15 +848,37 @@ def build_webgl_pressure_viewer(
     coords: np.ndarray,
     pressure_norm: np.ndarray,
     max_points: int = 8000,
-    mode: str = "pressure",
+    mode: str = "pressure",   # "pressure" | "airtrap"
     vent_coords: np.ndarray = None,
     mesh_trimesh=None,
 ) -> str:
+    """
+    Shared 3D static viewer for pressure distribution / air trap (Canvas 2D).
+
+    mode="pressure":
+        pressure_norm = 0~1 normalized pressure
+        color: blue(low) → green → red(high)
+
+    mode="airtrap":
+        pressure_norm = voxel type (0.0=surface voxel, 1.0=air trap)
+        color: 0.0 → dim blue (small dot), 1.0 → bright cyan (large dot)
+        vent_coords: recommended vent coord array (N,3) — drawn as orange diamonds
+
+    Fixes a Streamlit iframe bug where clientWidth is 0 on first mount;
+    defers initial resize via requestAnimationFrame.
+    """
     import json as _json
 
     N = len(coords)
     if N == 0:
         return "<p>No voxel data</p>"
+
+    # ── center/scale을 전체 coords 기준으로 먼저 계산 ──────────────────────
+    # contains() 필터링 후 남은 포인트로 재계산하면 STL 좌표계와 어긋남
+    c_min  = coords.min(axis=0)
+    c_max  = coords.max(axis=0)
+    scale  = float(np.maximum(c_max - c_min, 1e-6).max())
+    center = (c_min + c_max) / 2.0
 
     if N > max_points:
         idx      = np.linspace(0, N - 1, max_points, dtype=int)
@@ -849,6 +888,9 @@ def build_webgl_pressure_viewer(
         coords_s = coords
         p_norm_s = pressure_norm
 
+    # ── STL 내부 포인트만 필터링 ─────────────────────────────────────────
+    # 원본 월드 좌표(coords_s)로 contains() → flow_viewer와 동일한 방식
+    # _repair_mesh()로 watertight 보장된 mesh를 사용하므로 판별 신뢰 가능
     if mesh_trimesh is not None:
         try:
             inside_mask = mesh_trimesh.contains(coords_s)
@@ -858,21 +900,20 @@ def build_webgl_pressure_viewer(
                 p_norm_s = p_norm_s[inside_mask]
         except Exception:
             pass
+    # ────────────────────────────────────────────────────────────────────
 
-    c_min    = coords_s.min(axis=0)
-    c_max    = coords_s.max(axis=0)
-    scale    = float(np.maximum(c_max - c_min, 1e-6).max())
-    center   = (c_min + c_max) / 2.0
     coords_n = ((coords_s - center) / scale * 2.0).astype(np.float32)
 
     xyzp      = np.column_stack([coords_n, p_norm_s])
     xyzp_json = _json.dumps([[round(float(v), 3) for v in row] for row in xyzp])
 
+    # normalize vent coordinates
     vent_json = "[]"
     if mode == "airtrap" and vent_coords is not None and len(vent_coords) > 0:
         vc_n = ((np.array(vent_coords, dtype=np.float32) - center) / scale * 2.0)
         vent_json = _json.dumps([[round(float(v), 3) for v in row] for row in vc_n])
 
+    # ── STL wireframe edges ─────────────────────────────────────────────
     wire_segs_json = "[]"
     if mesh_trimesh is not None:
         try:
@@ -896,7 +937,9 @@ def build_webgl_pressure_viewer(
             wire_segs_json = _json.dumps(seg_list)
         except Exception:
             pass
+    # ───────────────────────────────────────────────────────────────────
 
+    # mode-specific HUD / legend text
     if mode == "airtrap":
         hud_html = """
   <div><span style="color:#557a99">Air Trap </span>
@@ -908,6 +951,7 @@ def build_webgl_pressure_viewer(
         legend_html = ""
         color_fn_js = """
 function pointColor(p) {
+  // p=0 → surface voxel (dim blue), p=1 → air trap (bright cyan)
   if (p >= 0.5) return {r:0,   g:180, b:255, a:0.90, radius:3.5};
   else          return {r:20,  g:60,  b:120, a:0.35, radius:1.8};
 }"""
@@ -1015,6 +1059,7 @@ function resize() {{
   draw();
 }}
 window.addEventListener('resize', () => {{ resize(); }});
+// first render: wait via RAF until Streamlit iframe size is settled
 requestAnimationFrame(resize);
 
 {color_fn_js}
@@ -1040,6 +1085,7 @@ function draw() {{
   grd.addColorStop(0,'#0f172a'); grd.addColorStop(1,'#1e293b');
   ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
 
+  // ── STL wireframe overlay ──
   if (WIRE_SEGS.length > 0) {{
     ctx.save();
     ctx.strokeStyle = 'rgba(100,180,255,0.18)';
@@ -1070,6 +1116,7 @@ function draw() {{
     ctx.fill();
   }});
 
+  // vent positions — orange diamonds
   VENTS.forEach((v, i) => {{
     const p = project(v[0],v[1],v[2]);
     if (!p) return;
@@ -1152,8 +1199,10 @@ def build_webgl_flow_viewer(
         except Exception:
             pass
 
-    coords_n = normalize(coords_s)
+    coords_n   = normalize(coords_s)
 
+    # ── Outlier removal: IQR per axis ───────────────────────────────────
+    # Removes stray voxels that end up far outside the main point cloud.
     try:
         q1 = np.percentile(coords_n, 5,  axis=0)
         q3 = np.percentile(coords_n, 95, axis=0)
@@ -1166,6 +1215,7 @@ def build_webgl_flow_viewer(
             weights_s = weights_s[inl]
     except Exception:
         pass
+    # ────────────────────────────────────────────────────────────────────
 
     voxel_size_n = min(0.06, max(0.002, 2.0 / (N ** (1/3))))
 
@@ -1226,6 +1276,7 @@ def build_webgl_flow_viewer(
     js_gate_h     = round(gate_h_n,      5)
     js_gate_shape = gate_shape_js
 
+    # (Three.js HTML — returned as-is)
     html = f"""<!DOCTYPE html>
 <html style="margin:0;padding:0;height:100%;">
 <head>
@@ -1519,8 +1570,6 @@ window.addEventListener('resize',onResize);onResize();requestAnimationFrame(anim
 
 def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
                         num_frames: int = 30, max_points: int = 8000) -> str:
-    import json as _json
-
     N = len(coords)
     if N == 0:
         return "<p>No voxel data</p>"
@@ -1542,10 +1591,12 @@ def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
     xyzw       = np.column_stack([coords_n, weights_s])
     xyzw_list  = [[round(float(v), 3) for v in row] for row in xyzw]
 
+    import json as _json
     xyzw_json = _json.dumps(xyzw_list)
     thr_json  = _json.dumps([round(float(t), 4) for t in thresholds])
     nf        = num_frames
 
+    # (Canvas 2D fallback viewer — kept as-is)
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>*{{margin:0;padding:0;box-sizing:border-box}}body{{background:#0a0f1a;font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
 #wrap{{position:relative;width:100%;height:100%}}canvas{{display:block;width:100%;cursor:grab}}canvas:active{{cursor:grabbing}}
@@ -1607,9 +1658,9 @@ resize();updateUI();
 
 tab1, tab2, tab3, tab4, tab_phase1, tab_phase2, tab_phase3 = st.tabs([
     "Simulation", "Material Library", "Results", "Settings",
-    "🔴 Pressure·Weld·AirTrap",
-    "🌡 Temp·Cooling",
-    "📐 Shrinkage·Deform",
+    "🔴 Pressure·Weld·AirTrap",   # Phase 1 (Day 1~3)
+    "🌡 Temp·Cooling",            # Phase 2 (Day 4~5)
+    "📐 Shrinkage·Deform",        # Phase 3 (Day 6~7)
 ])
 
 # ═══════════════════════════════════════════════════════════
@@ -1619,6 +1670,7 @@ with tab1:
     st.header("Simulation Setup")
     col1, col2 = st.columns([1, 1], gap="large")
 
+    # ── Left: STL upload & 3D visualization ──
     with col1:
         st.subheader("1️⃣ Part Upload")
         uploaded_file = st.file_uploader("Select STL File", type=["stl"])
@@ -1630,7 +1682,7 @@ with tab1:
                     try:
                         mesh = trimesh.load(default_stl_path, force='mesh')
                         if isinstance(mesh, trimesh.base.Trimesh) and len(mesh.faces) > 0:
-                            st.session_state.mesh = mesh
+                            st.session_state.mesh = _repair_mesh(mesh)
                             st.session_state.loaded_file_id = "default_part.stl"
                             st.session_state.gate_suggestions = []
                             st.session_state.gate_ai_advice = ""
@@ -1774,6 +1826,7 @@ with tab1:
         else:
             st.info("💡 Upload an STL file to display the 3D viewer.")
 
+    # ── Right: simulation parameters ──
     with col2:
         st.subheader("3️⃣ Process Parameters")
 
@@ -1868,6 +1921,7 @@ with tab1:
                     "causing fill to proceed from gate inward first."
                 ),
             )
+            # inline caption for current slider value
             wfk = st.session_state.wall_friction_k
             if wfk == 0.0:
                 st.caption("💡 Friction disabled — pure Dijkstra shortest path only")
@@ -2075,6 +2129,7 @@ with tab3:
                                   else str(results.get('num_voxels', results.get('n_voxels', '—'))))
                         k4.metric("Resolution", f"{results.get('res_mm', '—')} mm")
 
+                        # ★ solver parameter summary
                         if results.get("wall_friction_k") is not None:
                             st.caption(
                                 f"🧱 Wall Friction k = **{results['wall_friction_k']}** &nbsp;|&nbsp; "
@@ -2255,6 +2310,7 @@ with tab_phase1:
     if not st.session_state.get("job_id"):
         st.info("Please run a simulation in the [Simulation] tab first.")
     else:
+
         job_id    = st.session_state.job_id
         cache_key = f"voxel_full_{job_id}"
 
@@ -2264,7 +2320,7 @@ with tab_phase1:
 
         vdata = st.session_state.get(cache_key)
 
-        # ── Pressure distribution ──
+        # ── Pressure distribution section ──
         st.subheader("🔴 Pressure Distribution")
         st.caption("Gate (max pressure) → flow front (0 pressure) / BFS weight inversion")
 
@@ -2287,6 +2343,7 @@ with tab_phase1:
             )
             components.html(html_p, height=p_height, scrolling=False)
 
+            import plotly.express as px
             st.subheader("Pressure Distribution Histogram")
             fig = px.histogram(
                 x=pressure_arr, nbins=30,
@@ -2299,7 +2356,7 @@ with tab_phase1:
         else:
             st.warning("No pressure data. Re-run the simulation (Day 1 solver required).")
 
-        # ── Weld line ──
+        # ── Weld line section ──
         st.divider()
         st.subheader("🟡 Weld Line")
         st.caption("Where opposing flow fronts meet — structurally weak zone")
@@ -2316,6 +2373,7 @@ with tab_phase1:
 
             if weld_cnt > 0:
                 weld_coords = coords_arr[weld_arr]
+                import plotly.graph_objects as go
                 non_weld = coords_arr[~weld_arr][::max(1, int((total_cnt - weld_cnt) / 3000))]
                 fig = go.Figure()
                 fig.add_trace(go.Scatter3d(
@@ -2341,7 +2399,7 @@ with tab_phase1:
         else:
             st.warning("No weld line data. Re-run with the Day 2 solver.")
 
-        # ── Air trap ──
+        # ── Air trap section (Day 3) — reuse build_webgl_pressure_viewer() ──
         st.divider()
         st.subheader("🔵 Air Trap + Vent Recommendation")
         st.caption("Air pockets trapped near end of fill — near-surface + late-fill voxels")
@@ -2354,6 +2412,7 @@ with tab_phase1:
             col1.metric("Air trap voxels", f"{at_cnt:,}")
             col2.metric("Risk", "⚠️ High" if at_cnt > 50 else "✅ Low")
 
+            # recommended vent positions (from results.json)
             last_result = st.session_state.get("last_result", {})
             vent_pos    = last_result.get("results", {}).get("vent_positions", [])
 
@@ -2365,6 +2424,8 @@ with tab_phase1:
                     )
 
             if at_cnt > 0:
+                # reuse build_webgl_pressure_viewer() — mode="airtrap"
+                # voxel type in pressure_norm slot: surface=0.0, air trap=1.0
                 at_coords = coords_arr[at_arr]
                 non_at    = coords_arr[~at_arr]
 
@@ -2379,8 +2440,8 @@ with tab_phase1:
 
                 at_combined_coords = np.vstack([non_at, at_coords])
                 at_combined_types  = np.concatenate([
-                    np.zeros(len(non_at),    dtype=np.float32),
-                    np.ones( len(at_coords), dtype=np.float32),
+                    np.zeros(len(non_at),    dtype=np.float32),   # surface voxel = 0.0
+                    np.ones( len(at_coords), dtype=np.float32),   # air trap = 1.0
                 ])
                 vent_arr = np.array(vent_pos, dtype=np.float32) if vent_pos else None
 
@@ -2388,7 +2449,7 @@ with tab_phase1:
                 html_at = build_webgl_pressure_viewer(
                     at_combined_coords,
                     at_combined_types,
-                    max_points=len(at_combined_coords),
+                    max_points=len(at_combined_coords),  # already sampled above
                     mode="airtrap",
                     vent_coords=vent_arr,
                     mesh_trimesh=st.session_state.get("mesh", None),
@@ -2399,8 +2460,8 @@ with tab_phase1:
         else:
             st.warning("No air trap data. Re-run with the Day 3 solver.")
 
-# ═══════════════════════════════════════════════════════════
-# TAB PHASE 2: Temperature Distribution / Cooling Analysis
+    # ═══════════════════════════════════════════════════════════
+    # TAB PHASE 2: Temperature Distribution / Cooling Analysis
 # ═══════════════════════════════════════════════════════════
 with tab_phase2:
     st.header("🌡 Temperature Distribution / Cooling Analysis")
@@ -2408,6 +2469,7 @@ with tab_phase2:
     if not st.session_state.get("job_id"):
         st.info("Please run a simulation in the [Simulation] tab first.")
     else:
+
         job_id    = st.session_state.job_id
         cache_key = f"voxel_full_{job_id}"
 
@@ -2417,6 +2479,7 @@ with tab_phase2:
 
         vdata = st.session_state.get(cache_key)
 
+        # ── Cooling summary from results.json ──
         last_result = st.session_state.get("last_result", {})
         res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
         mat_name    = st.session_state.get("material", "unknown")
@@ -2433,9 +2496,11 @@ with tab_phase2:
             temp_arr    = vdata["temp"]
             coords_arr  = vdata["coords"]
 
+            # ── Temperature 3D viewer ──
             st.subheader("Temperature Distribution — 3D Viewer")
             st.caption("Blue (low temp / flow front) → Red (high temp / gate region)")
 
+            # Normalize for the pressure viewer (high value = red = hot)
             t_norm = (temp_arr - temp_arr.min()) / (temp_arr.max() - temp_arr.min() + 1e-6)
 
             t_height = st.slider("Viewer height (px)", 400, 900, 600, 50, key="t_h")
@@ -2446,6 +2511,10 @@ with tab_phase2:
             components.html(html_t, height=t_height, scrolling=False)
 
             st.divider()
+
+            # ── Temperature histogram ──
+            import plotly.express as px
+            import plotly.graph_objects as go
 
             st.subheader("Temperature Distribution Histogram")
             fig_hist = px.histogram(
@@ -2461,6 +2530,7 @@ with tab_phase2:
 
             st.divider()
 
+            # ── Temperature vs fill order scatter ──
             st.subheader("Temperature vs Fill Order")
             st.caption("How temperature drops as material travels further from the gate")
 
@@ -2494,6 +2564,7 @@ with tab_phase2:
 
             st.divider()
 
+            # ── Cooling analysis summary table ──
             st.subheader("Cooling Analysis Summary")
             t_inject = float(res_data.get("T_inject_C", temp_arr.max()))
             t_eject  = res_data.get("T_eject_C", "?")
@@ -2524,6 +2595,7 @@ with tab_phase2:
             }
             st.table(summary_data)
 
+            # ── Hot zone warning ──
             hot_threshold = temp_arr.max() * 0.90
             hot_count     = int((temp_arr >= hot_threshold).sum())
             hot_pct       = hot_count / max(len(temp_arr), 1) * 100
@@ -2542,7 +2614,9 @@ with tab_phase2:
         else:
             st.warning("No temperature data found. Please re-run the simulation (Day 4 solver required).")
 
-        # ── Day 5: Wall Thickness + Cooling Time Map ──
+        # ══════════════════════════════════════════════════════════
+        # Day 5: Local Wall Thickness + Per-Voxel Cooling Time Map
+        # ══════════════════════════════════════════════════════════
         if vdata is not None and "thickness" in vdata and "cooling_time_map" in vdata:
             st.divider()
             st.subheader("📏 Local Wall Thickness Distribution  (Day 5)")
@@ -2552,24 +2626,28 @@ with tab_phase2:
                 "Thin regions cool faster; thick regions are cooling bottlenecks."
             )
 
-            thick_arr  = vdata["thickness"]
+            thick_arr = vdata["thickness"]
             coords_arr = vdata["coords"]
 
+            # ── Thickness summary metrics ──────────────────────────────────
             mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("Min thickness",  f"{thick_arr.min():.2f} mm")
             mc2.metric("Mean thickness", f"{thick_arr.mean():.2f} mm")
             mc3.metric("Max thickness",  f"{thick_arr.max():.2f} mm")
+            # Thin-wall fraction: voxels thinner than 1/3 of average
             thin_thresh = thick_arr.mean() / 3.0
             thin_frac   = float((thick_arr < thin_thresh).sum()) / max(len(thick_arr), 1) * 100
             mc4.metric("Thin-wall voxels", f"{thin_frac:.1f}%",
                        help=f"Voxels thinner than {thin_thresh:.2f} mm (1/3 of mean)")
 
+            # Results.json supplementary values (if available)
             if res_data:
                 rd_mc1, rd_mc2, rd_mc3 = st.columns(3)
                 rd_mc1.metric("Avg thickness (solver)",  f"{res_data.get('avg_thickness_mm', '?')} mm")
                 rd_mc2.metric("Max cooling time (map)",  f"{res_data.get('max_cooling_time_s', '?')} s")
                 rd_mc3.metric("Mean cooling time (map)", f"{res_data.get('mean_cooling_time_s', '?')} s")
 
+            # Thickness 3D viewer — reuse pressure viewer (high = thick = warm colour)
             th_norm = (thick_arr - thick_arr.min()) / (thick_arr.max() - thick_arr.min() + 1e-6)
             th_height = st.slider("Viewer height", 400, 900, 550, 50, key="th_h")
             html_th = build_webgl_pressure_viewer(
@@ -2578,6 +2656,8 @@ with tab_phase2:
             )
             components.html(html_th, height=th_height, scrolling=False)
 
+            # Thickness histogram
+            import plotly.express as px
             fig_th = px.histogram(
                 x=thick_arr, nbins=40,
                 labels={"x": "Wall thickness (mm)", "y": "Voxel count"},
@@ -2588,6 +2668,7 @@ with tab_phase2:
             )
             st.plotly_chart(fig_th, use_container_width=True)
 
+            # ── Per-voxel Cooling Time Map ─────────────────────────────────
             st.divider()
             st.subheader("⏱ Per-Voxel Cooling Time Map  (Day 5)")
             st.caption(
@@ -2598,11 +2679,13 @@ with tab_phase2:
 
             ct_map_arr = vdata["cooling_time_map"]
 
+            # Cooling time metrics
             cm1, cm2, cm3 = st.columns(3)
             cm1.metric("Min cooling time",  f"{ct_map_arr.min():.3f} s")
             cm2.metric("Mean cooling time", f"{ct_map_arr.mean():.3f} s")
             cm3.metric("Max cooling time",  f"{ct_map_arr.max():.3f} s")
 
+            # Hotspot location
             hotspot_idx = int(np.argmax(ct_map_arr))
             hx, hy, hz  = coords_arr[hotspot_idx]
             st.warning(
@@ -2612,6 +2695,7 @@ with tab_phase2:
                 "Consider adding conformal cooling channels or increasing local gate proximity."
             )
 
+            # Cooling time 3D viewer
             ct_norm = (ct_map_arr - ct_map_arr.min()) / (ct_map_arr.max() - ct_map_arr.min() + 1e-6)
             ct_height = st.slider("Viewer height", 400, 900, 550, 50, key="ct_h")
             html_ct = build_webgl_pressure_viewer(
@@ -2620,6 +2704,8 @@ with tab_phase2:
             )
             components.html(html_ct, height=ct_height, scrolling=False)
 
+            # Cooling time histogram
+            import plotly.express as px
             fig_ct = px.histogram(
                 x=ct_map_arr, nbins=40,
                 labels={"x": "Cooling time (s)", "y": "Voxel count"},
@@ -2630,6 +2716,8 @@ with tab_phase2:
             )
             st.plotly_chart(fig_ct, use_container_width=True)
 
+            # Cooling time vs thickness scatter — confirm Throne h^2 relationship
+            import plotly.graph_objects as go
             st.subheader("Cooling Time vs Wall Thickness")
             st.caption("Expected quadratic relationship: tc ∝ h²  (Throne equation)")
             sample_n   = min(3000, len(thick_arr))
@@ -2659,15 +2747,16 @@ with tab_phase2:
             st.plotly_chart(fig_cts, use_container_width=True)
 
         elif vdata is not None and "temp" in vdata:
+            # Day 4 data present but Day 5 not yet computed
             st.divider()
             st.info(
                 "📏 **Wall thickness map and per-voxel cooling time** will appear here "
                 "after re-running the simulation with the Day 5 solver."
             )
 
-# ═══════════════════════════════════════════════════════════
-# TAB PHASE 3: Shrinkage / Deformation
-# ═══════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════
+    # TAB PHASE 3: Shrinkage / Deformation (Day 6~7)
+    # ═══════════════════════════════════════════════════════════
 with tab_phase3:
     st.header("📐 Shrinkage / Deformation Prediction")
     st.caption("Injection-process shrinkage only — sintering shrinkage (~14~16%) shown separately as reference.")
@@ -2675,6 +2764,7 @@ with tab_phase3:
     if not st.session_state.get("job_id"):
         st.info("Please run a simulation in the [Simulation] tab first.")
     else:
+
         job_id    = st.session_state.job_id
         cache_key = f"voxel_full_{job_id}"
 
@@ -2689,15 +2779,20 @@ with tab_phase3:
         mat_name    = st.session_state.get("material", "unknown")
 
         if vdata is not None and "shrinkage" in vdata:
+            import plotly.express as px
+            import plotly.graph_objects as go
+
             shrink_arr = vdata["shrinkage"]
             coords_arr = vdata["coords"]
 
+            # ── Deformation vectors (Day 7) ───────────────────────────────
             deform_arr = vdata.get("deform_vectors", None)
             if deform_arr is not None and deform_arr.ndim == 2:
                 deform_mag = np.linalg.norm(deform_arr, axis=1)
             else:
                 deform_mag = np.zeros(len(shrink_arr), dtype=np.float32)
 
+            # ── Summary metrics ───────────────────────────────────────────
             sc1, sc2, sc3, sc4 = st.columns(4)
             sc1.metric("Max shrinkage",   f"{shrink_arr.max()*100:.4f}%")
             sc2.metric("Mean shrinkage",  f"{shrink_arr.mean()*100:.4f}%")
@@ -2706,6 +2801,7 @@ with tab_phase3:
             sc4.metric("Sintering shrinkage (ref)", f"{sint_pct}%",
                        help="Separate sintering step shrinkage from materials_db — not included above.")
 
+            # ── Max deformation location warning ─────────────────────────
             if deform_mag.max() > 0:
                 max_def_idx  = int(np.argmax(deform_mag))
                 mx, my, mz   = coords_arr[max_def_idx]
@@ -2719,6 +2815,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Shrinkage 3D viewer ───────────────────────────────────────
             st.subheader("Shrinkage Distribution — 3D Viewer")
             st.caption("Blue (low shrinkage / high-pressure gate zone) → Red (high shrinkage / low-pressure flow front)")
 
@@ -2732,6 +2829,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Deformation magnitude 3D viewer ──────────────────────────
             st.subheader("Deformation Magnitude — 3D Viewer  (Day 7)")
             st.caption("Blue (small displacement) → Red (large displacement / high shrinkage gradient)")
 
@@ -2748,6 +2846,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Deformation magnitude histogram ──────────────────────────
             if deform_mag.max() > 0:
                 st.subheader("Deformation Magnitude Histogram")
                 fig_dm = px.histogram(
@@ -2762,6 +2861,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Deformation quiver (XY plane projection) ──────────────────
             if deform_arr is not None and deform_arr.ndim == 2 and deform_mag.max() > 0:
                 st.subheader("Deformation Quiver — XY Projection  (Day 7)")
                 st.caption("Arrows show displacement direction and relative magnitude (sampled)")
@@ -2776,6 +2876,7 @@ with tab_phase3:
                 mag_q = deform_mag[idx_q]
 
                 fig_q = go.Figure()
+                # Draw arrows as annotation-free scatter + line segments
                 arrow_x, arrow_y = [], []
                 for xi, yi, uxi, uyi in zip(cx, cy, ux, uy):
                     arrow_x += [xi, xi + uxi * 500, None]
@@ -2811,6 +2912,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Shrinkage histogram ───────────────────────────────────────
             st.subheader("Shrinkage Distribution Histogram")
             fig_sh = px.histogram(
                 x=shrink_arr * 100, nbins=40,
@@ -2824,6 +2926,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Shrinkage vs pressure scatter ─────────────────────────────
             if "pressure" in vdata:
                 st.subheader("Shrinkage vs Injection Pressure")
                 st.caption("Higher pressure → more pressure compensation → less net shrinkage")
@@ -2855,6 +2958,7 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Shrinkage vs temperature scatter ──────────────────────────
             if "temp" in vdata:
                 st.subheader("Shrinkage vs Temperature")
                 st.caption("Higher temperature → larger thermal strain → more shrinkage")
@@ -2886,13 +2990,10 @@ with tab_phase3:
 
             st.divider()
 
+            # ── Total shrinkage reference table ───────────────────────────
             st.subheader("ℹ️ Total Shrinkage Reference (Injection + Sintering)")
             inj_mean = shrink_arr.mean() * 100
-            # ✅ FIX: strip "~" and "%" before float conversion
-            try:
-                sint_val = float(str(sint_pct).replace("%", "").replace("~", "").strip())
-            except (ValueError, TypeError):
-                sint_val = 14.5
+            sint_val = float(str(sint_pct).replace("%", "").strip()) if sint_pct != "~14.5" else 14.5
             total_ref = inj_mean + sint_val
 
             ref_data = {
@@ -2914,6 +3015,7 @@ with tab_phase3:
                 "These values are first-order estimates — validate against actual part measurements."
             )
 
+            # ── High-shrinkage zone warning ───────────────────────────────
             high_thresh = shrink_arr.mean() + 2 * shrink_arr.std()
             high_count  = int((shrink_arr > high_thresh).sum())
             high_pct    = high_count / max(len(shrink_arr), 1) * 100
@@ -2933,11 +3035,11 @@ with tab_phase3:
             st.warning("No shrinkage data. Please re-run the simulation (Day 6 solver required).")
             st.info("Will be fully activated after Day 7 (deformation vectors).")
 
-# ── Footer ──
-st.divider()
-st.markdown(
-    "<div style='text-align: center; color: gray;'>"
-    "<small>MIM-Ops Pro v3.2 | Oracle Cloud Edition | © 2024</small>"
-    "</div>",
-    unsafe_allow_html=True
-)
+    # ── Footer ──
+    st.divider()
+    st.markdown(
+        "<div style='text-align: center; color: gray;'>"
+        "<small>MIM-Ops Pro v3.2 | Oracle Cloud Edition | © 2024</small>"
+        "</div>",
+        unsafe_allow_html=True
+    )
