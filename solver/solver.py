@@ -596,6 +596,92 @@ def calc_shrinkage(
     return shrinkage.astype(np.float32)
 
 
+# ════════════════════════════════════════════════════
+# Day 7: Deformation Vectors from Shrinkage Gradient
+# ════════════════════════════════════════════════════
+
+def calc_deformation(
+    coords: np.ndarray,
+    shrinkage_map: np.ndarray,
+    res: float,
+    scale: float = 10.0,
+    max_radius_multiplier: float = 2.0,
+) -> np.ndarray:
+    """
+    Estimate per-voxel deformation displacement vectors from the local
+    shrinkage gradient.
+
+    Physical model:
+        Each voxel is pulled toward its neighbours in proportion to the
+        shrinkage difference.  The displacement contribution from
+        neighbour j on voxel i is:
+
+            dU_i += (r_ij / |r_ij|) * (s_j - s_i) * res * scale
+
+        where r_ij = coords[j] - coords[i].
+
+    Implementation notes:
+        - The naive O(N²) loop in the spec is replaced by a vectorised
+          sparse-pair approach using cKDTree.query_pairs().
+        - For meshes larger than LARGE_THRESH voxels the contribution
+          radius is reduced to res*1.85 (nearest-face neighbours only)
+          to keep memory and compute bounded.
+        - Result is in the same unit as coords (mm) multiplied by
+          the dimensionless scale factor.
+
+    Returns:
+        deform_vectors  (N, 3) float32  — displacement vector per voxel (mm)
+    """
+    from scipy.spatial import cKDTree
+
+    total  = len(coords)
+    radius = res * max_radius_multiplier
+    print(
+        f"[Solver] Day7: computing deformation vectors "
+        f"({total:,} voxels, r={radius:.2f} mm, scale={scale})...",
+        flush=True,
+    )
+
+    LARGE_THRESH = 60_000
+    if total > LARGE_THRESH:
+        # For very large meshes use nearest-face distance only
+        radius = res * 1.85
+        print(
+            f"[Solver] Day7: large mesh — reducing search radius to {radius:.2f} mm",
+            flush=True,
+        )
+
+    tree  = cKDTree(coords)
+    pairs = tree.query_pairs(r=radius, output_type="ndarray")  # (M, 2)
+
+    deform = np.zeros((total, 3), dtype=np.float64)
+
+    if len(pairs) > 0:
+        i_idx = pairs[:, 0]
+        j_idx = pairs[:, 1]
+
+        r_ij  = coords[j_idx] - coords[i_idx]          # (M, 3)
+        dist  = np.linalg.norm(r_ij, axis=1, keepdims=True) + 1e-8   # (M, 1)
+        r_hat = r_ij / dist                              # (M, 3) unit vectors
+
+        ds    = (shrinkage_map[j_idx] - shrinkage_map[i_idx]).reshape(-1, 1)  # (M, 1)
+        contrib = r_hat * ds * res * scale               # (M, 3)
+
+        # Accumulate i ← +contrib,  j ← −contrib  (Newton 3rd law symmetry)
+        np.add.at(deform, i_idx,  contrib)
+        np.add.at(deform, j_idx, -contrib)
+
+    deform = deform.astype(np.float32)
+    mag    = np.linalg.norm(deform, axis=1)
+    print(
+        f"[Solver] Day7: deformation — "
+        f"max_magnitude={mag.max()*1000:.3f} μm  "
+        f"mean_magnitude={mag.mean()*1000:.3f} μm",
+        flush=True,
+    )
+    return deform
+
+
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
     """
@@ -1008,6 +1094,11 @@ def main():
     shrinkage_map = calc_shrinkage(temp_map, pressure_map, args.material)
     print("PROGRESS:95", flush=True)
 
+    # ── Day 7: Deformation vectors from shrinkage gradient ────────────
+    print("[Solver] Day7: computing deformation vectors...", flush=True)
+    deform_vectors = calc_deformation(all_coords, shrinkage_map, res)
+    print("PROGRESS:98", flush=True)
+
     # Surface voxel detection (for visualization — displays part shape in UI background)
     print("[Solver] Computing surface mask for visualization...", flush=True)
     from scipy.spatial import cKDTree as _cKDTree
@@ -1056,6 +1147,14 @@ def main():
     else:
         results["sintering_shrinkage_pct"] = 14.5
 
+    # Append Day 7 results to results dict
+    deform_mag = np.linalg.norm(deform_vectors, axis=1)
+    results["max_deform_um"]  = round(float(deform_mag.max()  * 1000), 4)
+    results["mean_deform_um"] = round(float(deform_mag.mean() * 1000), 4)
+    # Identify max-deformation voxel coordinate
+    max_def_idx = int(np.argmax(deform_mag))
+    results["max_deform_coord_mm"] = [round(float(v), 3) for v in all_coords[max_def_idx]]
+
     results_json_path = os.path.join(result_dir, "results.json")
     with open(results_json_path, "w") as fh:
         json.dump(results, fh, indent=4)
@@ -1074,7 +1173,8 @@ def main():
         temp=temp_map,                                        # ★ Day 4 retained
         thickness=thickness_map,                              # ★ Day 5 retained
         cooling_time_map=cooling_time_map,                    # ★ Day 5 retained
-        shrinkage=shrinkage_map,                              # ★ Day 6 NEW
+        shrinkage=shrinkage_map,                              # ★ Day 6 retained
+        deform_vectors=deform_vectors,                        # ★ Day 7 NEW
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
