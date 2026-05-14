@@ -823,10 +823,23 @@ def build_webgl_pressure_viewer(
     coords: np.ndarray,
     pressure_norm: np.ndarray,
     max_points: int = 8000,
+    mode: str = "pressure",   # "pressure" | "airtrap"
+    vent_coords: np.ndarray = None,
 ) -> str:
     """
-    압력 분포 전용 3D 정적 뷰어.
-    색상: 파랑(저압) → 초록(중압) → 빨강(고압)
+    압력 분포 / 에어트랩 공용 3D 정적 뷰어 (Canvas 2D).
+
+    mode="pressure":
+        pressure_norm = 0~1 정규화 압력
+        색상: 파랑(저압) → 초록 → 빨강(고압)
+
+    mode="airtrap":
+        pressure_norm = 복셀 타입 (0.0=표면복셀, 1.0=에어트랩)
+        색상: 0.0 → dim blue (작은 점), 1.0 → bright cyan (큰 점)
+        vent_coords: 벤트 추천 좌표 배열 (N,3) — 주황 다이아몬드로 표시
+
+    Streamlit iframe에서 clientWidth가 0으로 잡히는 버그를
+    requestAnimationFrame 지연 resize로 해결합니다.
     """
     import json as _json
 
@@ -851,62 +864,114 @@ def build_webgl_pressure_viewer(
     xyzp      = np.column_stack([coords_n, p_norm_s])
     xyzp_json = _json.dumps([[round(float(v), 3) for v in row] for row in xyzp])
 
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#07101f;font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
-canvas{{display:block;width:100%;height:100%;cursor:grab}}
-canvas:active{{cursor:grabbing}}
-#hud{{position:absolute;top:10px;left:12px;font-size:11px;
-      background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
-      border-radius:6px;padding:6px 12px;line-height:1.8;pointer-events:none}}
-#legend{{position:absolute;bottom:40px;right:12px;font-size:10px;
-         background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
-         border-radius:6px;padding:6px 10px}}
-#legend canvas{{width:120px;height:12px;display:block;margin-bottom:3px}}
-</style></head><body>
-<canvas id="c"></canvas>
-<div id="hud">
-  <div><span style="color:#557a99">압력 분포 </span><span style="color:#ff4444">■</span>고압 →
+    # 벤트 좌표 정규화
+    vent_json = "[]"
+    if mode == "airtrap" and vent_coords is not None and len(vent_coords) > 0:
+        vc_n = ((np.array(vent_coords, dtype=np.float32) - center) / scale * 2.0)
+        vent_json = _json.dumps([[round(float(v), 3) for v in row] for row in vc_n])
+
+    # 모드별 HUD/범례 텍스트
+    if mode == "airtrap":
+        hud_html = """
+  <div><span style="color:#557a99">에어트랩 </span>
+       <span style="color:#00ccff">■</span> 에어트랩 &nbsp;
+       <span style="color:#1a3a6a">■</span> 표면 복셀 &nbsp;
+       <span style="color:#ff6600">◆</span> 추천 벤트</div>
+  <div style="font-size:9px;color:#33556e;margin-top:4px">
+    좌클릭:회전 | 스크롤:줌 | 우클릭:이동</div>"""
+        legend_html = ""
+        color_fn_js = """
+function pointColor(p) {
+  // p=0 → 표면복셀(dim blue), p=1 → 에어트랩(bright cyan)
+  if (p >= 0.5) return {r:0,   g:180, b:255, a:0.90, radius:3.5};
+  else          return {r:20,  g:60,  b:120, a:0.35, radius:1.8};
+}"""
+    else:
+        hud_html = """
+  <div><span style="color:#557a99">압력 분포 </span>
+       <span style="color:#ff4444">■</span>고압 →
        <span style="color:#4444ff">■</span>저압</div>
   <div style="font-size:9px;color:#33556e;margin-top:4px">
-    좌클릭:회전 | 스크롤:줌 | 우클릭:이동</div>
-</div>
+    좌클릭:회전 | 스크롤:줌 | 우클릭:이동</div>"""
+        legend_html = """
 <div id="legend">
   <canvas id="legCvs" width="120" height="12"></canvas>
   <div style="display:flex;justify-content:space-between;color:#557a99">
     <span>저압</span><span>고압</span></div>
-</div>
-<script>
-const XYZP = {xyzp_json};
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-let W=0, H=0;
-function resize(){{W=canvas.width=canvas.clientWidth;H=canvas.height=canvas.clientHeight;}}
-window.addEventListener('resize',()=>{{resize();draw();}});
-resize();
-
-function pressColor(p){{
-  const r = p < 0.5 ? Math.round(p*2*30) : Math.round(30 + (p-0.5)*2*225);
+</div>"""
+        color_fn_js = """
+function pointColor(p) {
+  const r = p < 0.5 ? Math.round(p*2*30)  : Math.round(30  + (p-0.5)*2*225);
   const g = p < 0.5 ? Math.round(p*2*220) : Math.round(220 - (p-0.5)*2*180);
-  const b = p < 0.5 ? Math.round(255 - p*2*225) : Math.round(30);
-  return `rgb(${{r}},${{g}},${{b}})`;
-}}
+  const b = p < 0.5 ? Math.round(255-p*2*225) : 30;
+  return {r, g, b, a:0.85, radius:2.5};
+}"""
 
-(function(){{
+    legend_init_js = "" if mode == "airtrap" else """
+(function(){
   const lc = document.getElementById('legCvs');
+  if (!lc) return;
   const lx = lc.getContext('2d');
   const grd = lx.createLinearGradient(0,0,120,0);
   grd.addColorStop(0,'rgb(30,30,255)');
   grd.addColorStop(0.5,'rgb(30,220,30)');
   grd.addColorStop(1,'rgb(255,30,30)');
   lx.fillStyle=grd; lx.fillRect(0,0,120,12);
-}})();
+})();"""
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+html,body{{width:100%;height:100%;background:#07101f;
+           font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
+#wrap{{position:relative;width:100%;height:100%}}
+canvas#c{{position:absolute;top:0;left:0;width:100%;height:100%;
+          display:block;cursor:grab}}
+canvas#c:active{{cursor:grabbing}}
+#hud{{position:absolute;top:10px;left:12px;font-size:11px;
+      background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
+      border-radius:6px;padding:6px 12px;line-height:1.8;
+      pointer-events:none;z-index:10}}
+#legend{{position:absolute;bottom:40px;right:12px;font-size:10px;
+         background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
+         border-radius:6px;padding:6px 10px;z-index:10}}
+#legend canvas{{width:120px;height:12px;display:block;margin-bottom:3px}}
+</style></head><body>
+<div id="wrap">
+<canvas id="c"></canvas>
+<div id="hud">{hud_html}</div>
+{legend_html}
+</div>
+<script>
+const XYZP = {xyzp_json};
+const VENTS = {vent_json};
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W=0, H=0;
+
+function resize() {{
+  const wrap = document.getElementById('wrap');
+  const cw = wrap.clientWidth  || document.body.clientWidth  || 800;
+  const ch = wrap.clientHeight || document.body.clientHeight || 500;
+  if (cw < 10 || ch < 10) {{
+    requestAnimationFrame(resize);
+    return;
+  }}
+  W = canvas.width  = cw;
+  H = canvas.height = ch;
+  draw();
+}}
+window.addEventListener('resize', () => {{ resize(); }});
+// 첫 렌더: Streamlit iframe 마운트 후 크기가 확정될 때까지 RAF 대기
+requestAnimationFrame(resize);
+
+{color_fn_js}
+{legend_init_js}
 
 let rotX=0.35, rotY=-0.5, zoom=1.0, panX=0, panY=0;
 let isDrag=false, isPan=false, lastMX=0, lastMY=0;
 
-function project(x,y,z){{
+function project(x,y,z) {{
   const x1 =  x*Math.cos(rotY)+z*Math.sin(rotY);
   const z1 = -x*Math.sin(rotY)+z*Math.cos(rotY);
   const y2 =  y*Math.cos(rotX)-z1*Math.sin(rotX);
@@ -916,22 +981,46 @@ function project(x,y,z){{
   return [W/2+panX+(x1*fov/d)*W*0.42, H/2+panY-(y2*fov/d)*W*0.42, z2];
 }}
 
-function draw(){{
+function draw() {{
+  if(W===0 || H===0) return;
   ctx.clearRect(0,0,W,H);
   const grd=ctx.createLinearGradient(0,0,0,H);
   grd.addColorStop(0,'#0f172a'); grd.addColorStop(1,'#1e293b');
   ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
 
-  const pts = XYZP.map(r=>{{
+  const pts = XYZP.map(r => {{
     const p=project(r[0],r[1],r[2]);
     return p ? {{sx:p[0],sy:p[1],depth:p[2],pv:r[3]}} : null;
   }}).filter(Boolean).sort((a,b)=>a.depth-b.depth);
 
-  pts.forEach(pt=>{{
+  pts.forEach(pt => {{
+    const c = pointColor(pt.pv);
     ctx.beginPath();
-    ctx.arc(pt.sx, pt.sy, 2.5, 0, Math.PI*2);
-    ctx.fillStyle = pressColor(pt.pv);
+    ctx.arc(pt.sx, pt.sy, c.radius, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(${{c.r}},${{c.g}},${{c.b}},${{c.a}})`;
     ctx.fill();
+  }});
+
+  // 벤트 위치 — 주황 다이아몬드
+  VENTS.forEach((v, i) => {{
+    const p = project(v[0],v[1],v[2]);
+    if (!p) return;
+    const [sx, sy] = p;
+    const s = 9;
+    ctx.beginPath();
+    ctx.moveTo(sx,    sy-s);
+    ctx.lineTo(sx+s,  sy);
+    ctx.lineTo(sx,    sy+s);
+    ctx.lineTo(sx-s,  sy);
+    ctx.closePath();
+    ctx.fillStyle   = '#ff6600';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth   = 1.5;
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffcc88';
+    ctx.font = 'bold 10px Courier New';
+    ctx.fillText('V'+(i+1), sx+12, sy-4);
   }});
 }}
 
@@ -954,7 +1043,6 @@ canvas.addEventListener('wheel',e=>{{
   draw();
 }},{{passive:false}});
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
-draw();
 </script></body></html>"""
     return html
 
@@ -2117,7 +2205,9 @@ with tab_phase1:
             pressure_arr.max() - pressure_arr.min() + 1e-6
         )
         p_height = st.slider("뷰어 높이", 400, 900, 600, 50, key="p1_h")
-        html_p   = build_webgl_pressure_viewer(coords_arr, p_norm)
+        html_p   = build_webgl_pressure_viewer(
+            coords_arr, p_norm, max_points=10000, mode="pressure"
+        )
         components.html(html_p, height=p_height, scrolling=False)
 
         import plotly.express as px
@@ -2176,7 +2266,7 @@ with tab_phase1:
     else:
         st.warning("웰드라인 데이터 없음. Day 2 solver로 시뮬레이션을 재실행하세요.")
 
-    # ── 에어트랩은 Day 3에 추가 ──
+    # ── 에어트랩 섹션 (Day 3) — build_webgl_pressure_viewer() 재사용 ──
     st.divider()
     st.subheader("🔵 에어트랩 + 벤트 추천")
     st.caption("충전 말기에 공기가 갇히는 위험 구간 — 표면 근처 + 충전 늦은 복셀")
@@ -2190,9 +2280,8 @@ with tab_phase1:
         col2.metric("위험도", "⚠️ 높음" if at_cnt > 50 else "✅ 낮음")
 
         # 벤트 추천 위치 (results.json에서)
-        last_result  = st.session_state.get("last_result", {})
-        vent_pos     = last_result.get("results", {}).get("vent_positions", [])
-        airtrap_cnt_r = last_result.get("results", {}).get("airtrap_count", None)
+        last_result = st.session_state.get("last_result", {})
+        vent_pos    = last_result.get("results", {}).get("vent_positions", [])
 
         if vent_pos:
             st.markdown("**📍 추천 벤트 위치:**")
@@ -2202,38 +2291,36 @@ with tab_phase1:
                 )
 
         if at_cnt > 0:
+            # build_webgl_pressure_viewer() 재사용 — mode="airtrap"
+            # pressure_norm 자리에 복셀 타입: 표면복셀=0.0, 에어트랩=1.0
             at_coords = coords_arr[at_arr]
-            non_at    = coords_arr[~at_arr][::max(1, int(len(coords_arr) / 4000))]
-            import plotly.graph_objects as go
-            fig = go.Figure()
-            fig.add_trace(go.Scatter3d(
-                x=non_at[:, 0], y=non_at[:, 1], z=non_at[:, 2],
-                mode='markers',
-                marker=dict(size=2.5, color='#4a90d9', opacity=0.55),
-                name='파트 형상'
-            ))
-            fig.add_trace(go.Scatter3d(
-                x=at_coords[:, 0], y=at_coords[:, 1], z=at_coords[:, 2],
-                mode='markers',
-                marker=dict(size=4, color='#00ccff', opacity=0.9),
-                name='에어트랩'
-            ))
-            if vent_pos:
-                vp = np.array(vent_pos)
-                fig.add_trace(go.Scatter3d(
-                    x=vp[:, 0], y=vp[:, 1], z=vp[:, 2],
-                    mode='markers+text',
-                    marker=dict(size=8, color='#ff6600', symbol='diamond', opacity=1.0),
-                    text=[f"V{i+1}" for i in range(len(vp))],
-                    textposition='top center',
-                    name='추천 벤트'
-                ))
-            fig.update_layout(
-                scene=dict(bgcolor='#07101f'),
-                paper_bgcolor='#07101f', font_color='#8ecfff',
-                margin=dict(l=0, r=0, b=0, t=0), height=500,
+            non_at    = coords_arr[~at_arr]
+
+            MAX_AT  = 4000
+            MAX_NON = 4000
+            if len(at_coords) > MAX_AT:
+                idx_at    = np.linspace(0, len(at_coords)-1, MAX_AT, dtype=int)
+                at_coords = at_coords[idx_at]
+            if len(non_at) > MAX_NON:
+                idx_non = np.linspace(0, len(non_at)-1, MAX_NON, dtype=int)
+                non_at  = non_at[idx_non]
+
+            at_combined_coords = np.vstack([non_at, at_coords])
+            at_combined_types  = np.concatenate([
+                np.zeros(len(non_at),    dtype=np.float32),   # 표면복셀 = 0.0
+                np.ones( len(at_coords), dtype=np.float32),   # 에어트랩 = 1.0
+            ])
+            vent_arr = np.array(vent_pos, dtype=np.float32) if vent_pos else None
+
+            at_height = st.slider("뷰어 높이", 400, 900, 550, 50, key="at_h")
+            html_at = build_webgl_pressure_viewer(
+                at_combined_coords,
+                at_combined_types,
+                max_points=len(at_combined_coords),  # 이미 샘플링 완료
+                mode="airtrap",
+                vent_coords=vent_arr,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            components.html(html_at, height=at_height, scrolling=False)
         else:
             st.success("✅ 에어트랩 없음 (양호)")
     else:
