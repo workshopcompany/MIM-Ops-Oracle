@@ -639,7 +639,7 @@ def get_ai_gate_advice(mesh: trimesh.Trimesh, material_name: str):
             f"Density: {props.get('rho', 0):.0f} kg/m³, "
             f"Part volume: {vol:.1f} mm³, "
             f"Bounding box: {dims[0]:.1f} × {dims[1]:.1f} × {dims[2]:.1f} mm. "
-            f"추천 게이트 위치와 이유를 2문장으로 설명하세요 (한글)."
+            f"Please explain the recommended gate position and reasons in 2 sentences."
         )
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -1056,7 +1056,7 @@ def build_webgl_flow_viewer(
 
     N = len(coords)
     if N == 0:
-        return "<p>복셀 데이터 없음</p>"
+        return "<p>No voxel data</p>"
 
     c_min  = coords.min(axis=0)
     c_max  = coords.max(axis=0)
@@ -1440,7 +1440,7 @@ def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
                         num_frames: int = 30, max_points: int = 8000) -> str:
     N = len(coords)
     if N == 0:
-        return "<p>복셀 데이터 없음</p>"
+        return "<p>No voxel data</p>"
 
     if N > max_points:
         idx       = np.linspace(0, N - 1, max_points, dtype=int)
@@ -1770,7 +1770,7 @@ with tab1:
             )
 
         # ════════════════════════════════════════════════
-        # ★ 신규: Advanced Solver Parameters
+        # ★ NEW: Advanced Solver Parameters
         # ════════════════════════════════════════════════
         st.divider()
         with st.expander("⚙️ Advanced Solver Parameters", expanded=False):
@@ -2019,7 +2019,7 @@ with tab3:
                     if frames:
                         viewer_h  = st.slider("Viewer height (px)", 400, 1000, 700, 50, key="frame_viewer_h")
                         frame_idx = st.slider(
-                            f"Frame  (total {len(frames)})",,
+                            f"Frame  (total {len(frames)})",
                             min_value=1, max_value=len(frames),
                             value=st.session_state.get("frame_slider", 1),
                             step=1, key="frame_slider",
@@ -2170,7 +2170,7 @@ with tab4:
         )
 
 # ═══════════════════════════════════════════════════════════
-# TAB PHASE 1: 압력·웰드·에어트랩
+# TAB PHASE 1: Pressure · Weld · Air Trap
 # ═══════════════════════════════════════════════════════════
 with tab_phase1:
     st.header("🔴 Pressure Distribution / Weld Line / Air Trap")
@@ -2327,14 +2327,14 @@ with tab_phase1:
         st.warning("No air trap data. Re-run with the Day 3 solver.")
 
 # ═══════════════════════════════════════════════════════════
-# TAB PHASE 2: 온도·냉각 (Day 4~5에 구현)
+# TAB PHASE 2: Temperature · Cooling (to be implemented Day 4~5)
 # ═══════════════════════════════════════════════════════════
 with tab_phase2:
     st.header("🌡 Temperature Distribution / Cooling Analysis")
     st.info("Will be activated after Day 4~5 work.")
 
 # ═══════════════════════════════════════════════════════════
-# TAB PHASE 3: 수축·변형 (Day 6~7에 구현)
+# TAB PHASE 3: Shrinkage · Deformation (to be implemented Day 6~7)
 # ═══════════════════════════════════════════════════════════
 with tab_phase3:
     st.header("📐 Shrinkage / Deformation Prediction")
