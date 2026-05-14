@@ -2327,11 +2327,157 @@ with tab_phase1:
         st.warning("No air trap data. Re-run with the Day 3 solver.")
 
 # ═══════════════════════════════════════════════════════════
-# TAB PHASE 2: Temperature · Cooling (to be implemented Day 4~5)
+# TAB PHASE 2: Temperature Distribution / Cooling Analysis
 # ═══════════════════════════════════════════════════════════
 with tab_phase2:
     st.header("🌡 Temperature Distribution / Cooling Analysis")
-    st.info("Will be activated after Day 4~5 work.")
+
+    if not st.session_state.get("job_id"):
+        st.info("Please run a simulation in the [Simulation] tab first.")
+        st.stop()
+
+    job_id    = st.session_state.job_id
+    cache_key = f"voxel_full_{job_id}"
+
+    if cache_key not in st.session_state:
+        with st.spinner("Loading analysis data..."):
+            st.session_state[cache_key] = get_voxel_data_full(job_id)
+
+    vdata = st.session_state.get(cache_key)
+
+    # ── Cooling summary from results.json ──
+    last_result = st.session_state.get("last_result", {})
+    res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
+    mat_name    = st.session_state.get("material", "unknown")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Material",            mat_name)
+    col2.metric("Injection Temp",      f"{res_data.get('T_inject_C', '?')} °C")
+    col3.metric("Ejection Temp",       f"{res_data.get('T_eject_C', '?')} °C")
+    col4.metric("Est. Cooling Time",   f"{res_data.get('cooling_time_s', '?')} s")
+
+    st.divider()
+
+    if vdata is not None and "temp" in vdata:
+        temp_arr    = vdata["temp"]
+        coords_arr  = vdata["coords"]
+
+        # ── Temperature 3D viewer ──
+        st.subheader("Temperature Distribution — 3D Viewer")
+        st.caption("Blue (low temp / flow front) → Red (high temp / gate region)")
+
+        # Normalize for the pressure viewer (high value = red = hot)
+        t_norm = (temp_arr - temp_arr.min()) / (temp_arr.max() - temp_arr.min() + 1e-6)
+
+        t_height = st.slider("Viewer height (px)", 400, 900, 600, 50, key="t_h")
+        html_t   = build_webgl_pressure_viewer(
+            coords_arr, t_norm, max_points=10000, mode="pressure"
+        )
+        components.html(html_t, height=t_height, scrolling=False)
+
+        st.divider()
+
+        # ── Temperature histogram ──
+        import plotly.express as px
+        import plotly.graph_objects as go
+
+        st.subheader("Temperature Distribution Histogram")
+        fig_hist = px.histogram(
+            x=temp_arr, nbins=30,
+            labels={"x": "Temperature (°C)", "y": "Voxel count"},
+            color_discrete_sequence=["#ff6644"],
+        )
+        fig_hist.update_layout(
+            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+            font_color="#8ecfff",
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        st.divider()
+
+        # ── Temperature vs fill order scatter ──
+        st.subheader("Temperature vs Fill Order")
+        st.caption("How temperature drops as material travels further from the gate")
+
+        if "weights" in vdata:
+            weights_arr = vdata["weights"]
+            sample_n    = min(3000, len(weights_arr))
+            idx_s       = np.linspace(0, len(weights_arr) - 1, sample_n, dtype=int)
+            fig_scat = go.Figure()
+            fig_scat.add_trace(go.Scatter(
+                x=weights_arr[idx_s],
+                y=temp_arr[idx_s],
+                mode="markers",
+                marker=dict(
+                    size=3,
+                    color=temp_arr[idx_s],
+                    colorscale="RdYlBu_r",
+                    opacity=0.6,
+                    showscale=True,
+                    colorbar=dict(title="Temp (°C)", tickfont=dict(color="#8ecfff")),
+                ),
+                name="Voxels",
+            ))
+            fig_scat.update_layout(
+                xaxis_title="Fill order (normalized weight, 0=gate → 1=flow front)",
+                yaxis_title="Temperature (°C)",
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                font_color="#8ecfff",
+                height=380,
+            )
+            st.plotly_chart(fig_scat, use_container_width=True)
+
+        st.divider()
+
+        # ── Cooling analysis summary table ──
+        st.subheader("Cooling Analysis Summary")
+        t_inject = float(res_data.get("T_inject_C", temp_arr.max()))
+        t_eject  = res_data.get("T_eject_C", "?")
+        t_mold   = res_data.get("Tmold_C",   temp_arr.min())
+        ct_s     = res_data.get("cooling_time_s", "?")
+
+        summary_data = {
+            "Item":  [
+                "Material",
+                "Injection Temperature",
+                "Mold Temperature",
+                "Ejection Temperature",
+                "Max Recorded Temp",
+                "Min Recorded Temp",
+                "Temp Gradient",
+                "Estimated Cooling Time",
+            ],
+            "Value": [
+                mat_name,
+                f"{t_inject:.0f} °C",
+                f"{float(t_mold):.0f} °C" if isinstance(t_mold, (int, float)) else str(t_mold),
+                f"{t_eject} °C",
+                f"{temp_arr.max():.1f} °C",
+                f"{temp_arr.min():.1f} °C",
+                f"{temp_arr.max() - temp_arr.min():.1f} °C",
+                f"{ct_s} s",
+            ],
+        }
+        st.table(summary_data)
+
+        # ── Hot zone warning ──
+        hot_threshold = temp_arr.max() * 0.90
+        hot_count     = int((temp_arr >= hot_threshold).sum())
+        hot_pct       = hot_count / max(len(temp_arr), 1) * 100
+        if hot_pct > 5.0:
+            st.warning(
+                f"⚠️ **High-temperature zone detected** — {hot_count:,} voxels ({hot_pct:.1f}%) "
+                f"above {hot_threshold:.0f} °C (90% of max). "
+                "Check gate area for potential thermal degradation risk."
+            )
+        else:
+            st.success(
+                f"✅ Temperature distribution is well-balanced — "
+                f"only {hot_pct:.1f}% of voxels exceed 90% of max temperature."
+            )
+
+    else:
+        st.warning("No temperature data found. Please re-run the simulation (Day 4 solver required).")
 
 # ═══════════════════════════════════════════════════════════
 # TAB PHASE 3: Shrinkage · Deformation (to be implemented Day 6~7)
