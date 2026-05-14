@@ -2479,6 +2479,144 @@ with tab_phase2:
     else:
         st.warning("No temperature data found. Please re-run the simulation (Day 4 solver required).")
 
+    # ══════════════════════════════════════════════════════════
+    # Day 5: Local Wall Thickness + Per-Voxel Cooling Time Map
+    # ══════════════════════════════════════════════════════════
+    if vdata is not None and "thickness" in vdata and "cooling_time_map" in vdata:
+        st.divider()
+        st.subheader("📏 Local Wall Thickness Distribution  (Day 5)")
+        st.caption(
+            "Thickness estimated per voxel via medial-axis approximation "
+            "(2 × distance to nearest surface voxel). "
+            "Thin regions cool faster; thick regions are cooling bottlenecks."
+        )
+
+        thick_arr = vdata["thickness"]
+        coords_arr = vdata["coords"]
+
+        # ── Thickness summary metrics ──────────────────────────────────
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Min thickness",  f"{thick_arr.min():.2f} mm")
+        mc2.metric("Mean thickness", f"{thick_arr.mean():.2f} mm")
+        mc3.metric("Max thickness",  f"{thick_arr.max():.2f} mm")
+        # Thin-wall fraction: voxels thinner than 1/3 of average
+        thin_thresh = thick_arr.mean() / 3.0
+        thin_frac   = float((thick_arr < thin_thresh).sum()) / max(len(thick_arr), 1) * 100
+        mc4.metric("Thin-wall voxels", f"{thin_frac:.1f}%",
+                   help=f"Voxels thinner than {thin_thresh:.2f} mm (1/3 of mean)")
+
+        # Results.json supplementary values (if available)
+        if res_data:
+            rd_mc1, rd_mc2, rd_mc3 = st.columns(3)
+            rd_mc1.metric("Avg thickness (solver)",  f"{res_data.get('avg_thickness_mm', '?')} mm")
+            rd_mc2.metric("Max cooling time (map)",  f"{res_data.get('max_cooling_time_s', '?')} s")
+            rd_mc3.metric("Mean cooling time (map)", f"{res_data.get('mean_cooling_time_s', '?')} s")
+
+        # Thickness 3D viewer — reuse pressure viewer (high = thick = warm colour)
+        th_norm = (thick_arr - thick_arr.min()) / (thick_arr.max() - thick_arr.min() + 1e-6)
+        th_height = st.slider("Viewer height", 400, 900, 550, 50, key="th_h")
+        html_th = build_webgl_pressure_viewer(
+            coords_arr, th_norm, max_points=10000, mode="pressure"
+        )
+        components.html(html_th, height=th_height, scrolling=False)
+
+        # Thickness histogram
+        import plotly.express as px
+        fig_th = px.histogram(
+            x=thick_arr, nbins=40,
+            labels={"x": "Wall thickness (mm)", "y": "Voxel count"},
+            color_discrete_sequence=["#44aaff"],
+        )
+        fig_th.update_layout(
+            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+        )
+        st.plotly_chart(fig_th, use_container_width=True)
+
+        # ── Per-voxel Cooling Time Map ─────────────────────────────────
+        st.divider()
+        st.subheader("⏱ Per-Voxel Cooling Time Map  (Day 5)")
+        st.caption(
+            "Throne equation applied voxel-by-voxel using local wall thickness. "
+            "Hotspots (longest cooling time) indicate areas with high sink-mark or "
+            "residual stress risk."
+        )
+
+        ct_map_arr = vdata["cooling_time_map"]
+
+        # Cooling time metrics
+        cm1, cm2, cm3 = st.columns(3)
+        cm1.metric("Min cooling time",  f"{ct_map_arr.min():.3f} s")
+        cm2.metric("Mean cooling time", f"{ct_map_arr.mean():.3f} s")
+        cm3.metric("Max cooling time",  f"{ct_map_arr.max():.3f} s")
+
+        # Hotspot location
+        hotspot_idx = int(np.argmax(ct_map_arr))
+        hx, hy, hz  = coords_arr[hotspot_idx]
+        st.warning(
+            f"⚠️ **Cooling hotspot** — longest cooling time "
+            f"**{ct_map_arr[hotspot_idx]:.3f} s** at "
+            f"X={hx:.2f} mm  Y={hy:.2f} mm  Z={hz:.2f} mm. "
+            "Consider adding conformal cooling channels or increasing local gate proximity."
+        )
+
+        # Cooling time 3D viewer
+        ct_norm = (ct_map_arr - ct_map_arr.min()) / (ct_map_arr.max() - ct_map_arr.min() + 1e-6)
+        ct_height = st.slider("Viewer height", 400, 900, 550, 50, key="ct_h")
+        html_ct = build_webgl_pressure_viewer(
+            coords_arr, ct_norm, max_points=10000, mode="pressure"
+        )
+        components.html(html_ct, height=ct_height, scrolling=False)
+
+        # Cooling time histogram
+        import plotly.express as px
+        fig_ct = px.histogram(
+            x=ct_map_arr, nbins=40,
+            labels={"x": "Cooling time (s)", "y": "Voxel count"},
+            color_discrete_sequence=["#ff8844"],
+        )
+        fig_ct.update_layout(
+            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+        )
+        st.plotly_chart(fig_ct, use_container_width=True)
+
+        # Cooling time vs thickness scatter — confirm Throne h^2 relationship
+        import plotly.graph_objects as go
+        st.subheader("Cooling Time vs Wall Thickness")
+        st.caption("Expected quadratic relationship: tc ∝ h²  (Throne equation)")
+        sample_n   = min(3000, len(thick_arr))
+        idx_ct     = np.linspace(0, len(thick_arr) - 1, sample_n, dtype=int)
+        fig_cts = go.Figure()
+        fig_cts.add_trace(go.Scatter(
+            x=thick_arr[idx_ct],
+            y=ct_map_arr[idx_ct],
+            mode="markers",
+            marker=dict(
+                size=3,
+                color=ct_map_arr[idx_ct],
+                colorscale="YlOrRd",
+                opacity=0.55,
+                showscale=True,
+                colorbar=dict(title="tc (s)", tickfont=dict(color="#8ecfff")),
+            ),
+            name="Voxels",
+        ))
+        fig_cts.update_layout(
+            xaxis_title="Local wall thickness (mm)",
+            yaxis_title="Cooling time (s)",
+            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+            font_color="#8ecfff",
+            height=360,
+        )
+        st.plotly_chart(fig_cts, use_container_width=True)
+
+    elif vdata is not None and "temp" in vdata:
+        # Day 4 data present but Day 5 not yet computed
+        st.divider()
+        st.info(
+            "📏 **Wall thickness map and per-voxel cooling time** will appear here "
+            "after re-running the simulation with the Day 5 solver."
+        )
+
 # ═══════════════════════════════════════════════════════════
 # TAB PHASE 3: Shrinkage · Deformation (to be implemented Day 6~7)
 # ═══════════════════════════════════════════════════════════
