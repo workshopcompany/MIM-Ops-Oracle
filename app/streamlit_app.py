@@ -51,7 +51,7 @@ if not os.path.exists(MATERIAL_FILE):
     MATERIAL_FILE = "material_property.txt"
 
 # ═══════════════════════════════════════════════════════════
-# SESSION STATE 초기화
+# SESSION STATE INITIALIZATION
 # ═══════════════════════════════════════════════════════════
 
 def init_session_state():
@@ -76,7 +76,7 @@ def init_session_state():
         "last_result": None,
         "gate_suggestions": [],
         "gate_ai_advice": "",
-        # ★ 신규: solver wall friction + flow decay
+        # ★ NEW: solver wall friction + flow decay
         "wall_friction_k": 3.0,
         "flow_decay": 0.5,
     }
@@ -87,7 +87,7 @@ def init_session_state():
 init_session_state()
 
 # ═══════════════════════════════════════════════════════════
-# RAM 예측 / 해상도 추천
+# RAM ESTIMATION / RESOLUTION ADVISOR
 # ═══════════════════════════════════════════════════════════
 
 def estimate_ram_gb(mesh, res_mm: float) -> tuple[int, float]:
@@ -141,7 +141,7 @@ def render_ram_advisor(mesh):
 
 
 # ═══════════════════════════════════════════════════════════
-# 재료 데이터베이스 함수들
+# MATERIAL DATABASE FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=60)
@@ -204,7 +204,7 @@ def list_available_materials() -> list:
 
 
 # ═══════════════════════════════════════════════════════════
-# 3D 시각화 함수들
+# 3D VISUALIZATION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
 def load_stl_file(uploaded_file):
@@ -530,7 +530,7 @@ resize();
 
 
 # ═══════════════════════════════════════════════════════════
-# 게이트 위치 추천 함수들
+# GATE POSITION SUGGESTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
 def snap_to_mesh_surface(mesh: trimesh.Trimesh, point: np.ndarray) -> np.ndarray:
@@ -659,12 +659,12 @@ def get_ai_gate_advice(mesh: trimesh.Trimesh, material_name: str):
                           .get("text", "").strip())
             return advice if advice else None
     except Exception as e:
-        st.warning(f"Gemini AI 조언 조회 오류: {e}")
+        st.warning(f"Gemini AI advice fetch error: {e}")
     return None
 
 
 # ═══════════════════════════════════════════════════════════
-# Oracle Cloud API 함수들
+# ORACLE CLOUD API FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -673,18 +673,18 @@ def check_api_connection(api_url: str = None) -> tuple[bool, str]:
     try:
         response = requests.get(f"{url}/health", timeout=5)
         if response.status_code == 200:
-            return True, "연결됨"
+            return True, "Connected"
         return False, f"HTTP {response.status_code}"
     except requests.exceptions.ConnectionError:
-        return False, f"서버에 연결할 수 없습니다 ({url})"
+        return False, f"Cannot connect to server ({url})"
     except requests.exceptions.Timeout:
-        return False, "연결 시간 초과 (5s)"
+        return False, "Connection timed out (5s)"
     except Exception as e:
         return False, str(e)
 
 
 def submit_simulation(stl_file_bytes: bytes, params: dict) -> dict:
-    """시뮬레이션 요청 제출 — wall_friction_k, flow_decay 포함"""
+    """Submit simulation request — includes wall_friction_k and flow_decay"""
     try:
         url     = f"{ORACLE_API_URL}/api/simulate"
         headers = {"Authorization": f"Bearer {ORACLE_API_KEY}"}
@@ -699,7 +699,7 @@ def submit_simulation(stl_file_bytes: bytes, params: dict) -> dict:
             "etime":           params.get("etime",           1.0),
             "num_frames":      params.get("num_frames",      15),
             "mesh_res_mm":     params.get("mesh_res_mm",     0.5),
-            # ★ 신규 파라미터
+            # ★ NEW PARAMETERS
             "wall_friction_k": params.get("wall_friction_k", 3.0),
             "flow_decay":      params.get("flow_decay",      0.5),
         }
@@ -710,10 +710,10 @@ def submit_simulation(stl_file_bytes: bytes, params: dict) -> dict:
         if response.status_code in (200, 202):
             return response.json()
         else:
-            st.error(f"시뮬레이션 제출 실패: {response.status_code}")
+            st.error(f"Simulation submission failed: {response.status_code}")
             return None
     except Exception as e:
-        st.error(f"API 오류: {e}")
+        st.error(f"API error: {e}")
         return None
 
 
@@ -726,7 +726,7 @@ def get_job_status(job_id: str) -> dict:
             return response.json()
         return None
     except Exception as e:
-        st.warning(f"상태 조회 오류: {e}")
+        st.warning(f"Status check error: {e}")
         return None
 
 
@@ -739,7 +739,7 @@ def get_results(job_id: str) -> dict:
             return response.json()
         return None
     except Exception as e:
-        st.warning(f"결과 조회 오류: {e}")
+        st.warning(f"Result fetch error: {e}")
         return None
 
 
@@ -752,7 +752,7 @@ def get_frames(job_id: str) -> tuple:
             data   = response.json()
             frames = data.get("frames", [])
             if not frames:
-                return [], "서버 응답은 성공했지만 frames 배열이 비어 있습니다."
+                return [], "Server responded successfully but frames array is empty."
             return frames, None
         elif response.status_code == 404:
             try:
@@ -761,9 +761,9 @@ def get_frames(job_id: str) -> tuple:
                 searched = detail.get("searched", [])
                 msg      = f"404 — {detail.get('error', 'Not found')}"
                 if tip:      msg += f"\n💡 {tip}"
-                if searched: msg += f"\n탐색한 경로: {searched}"
+                if searched: msg += f"\nSearched paths: {searched}"
             except Exception:
-                msg = "404 — frames 디렉토리를 찾을 수 없습니다."
+                msg = "404 — frames directory not found."
             return [], msg
         elif response.status_code == 400:
             try:
@@ -774,9 +774,9 @@ def get_frames(job_id: str) -> tuple:
         else:
             return [], f"HTTP {response.status_code}: {response.text[:200]}"
     except requests.exceptions.Timeout:
-        return [], "요청 시간 초과 (60s). 프레임 수가 너무 많거나 서버가 느릴 수 있습니다."
+        return [], "Request timed out (60s). Too many frames or server is slow."
     except Exception as e:
-        return [], f"네트워크 오류: {e}"
+        return [], f"Network error: {e}"
 
 
 def get_voxel_data(job_id: str):
@@ -793,13 +793,13 @@ def get_voxel_data(job_id: str):
             return coords, weights
         return None, None
     except Exception as e:
-        st.warning(f"복셀 데이터 조회 오류: {e}")
+        st.warning(f"Voxel data fetch error: {e}")
         return None, None
 
 def get_voxel_data_full(job_id: str) -> dict | None:
     """
-    voxel_data.npz의 모든 필드를 dict로 반환.
-    Phase 탭 전용. 기존 get_voxel_data()는 건드리지 않음.
+    Return all fields from voxel_data.npz as a dict.
+    For Phase tabs only. Does not modify existing get_voxel_data().
     """
     try:
         url     = f"{ORACLE_API_URL}/api/voxels/{job_id}"
@@ -815,7 +815,7 @@ def get_voxel_data_full(job_id: str) -> dict | None:
             result[key] = npz[key].astype(np.float32)
         return result  # {"coords": ..., "weights": ..., "display_weights": ..., "pressure": ...}
     except Exception as e:
-        st.warning(f"복셀 전체 데이터 조회 오류: {e}")
+        st.warning(f"Full voxel data fetch error: {e}")
         return None
 
 
@@ -827,25 +827,25 @@ def build_webgl_pressure_viewer(
     vent_coords: np.ndarray = None,
 ) -> str:
     """
-    압력 분포 / 에어트랩 공용 3D 정적 뷰어 (Canvas 2D).
+    Shared 3D static viewer for pressure distribution / air trap (Canvas 2D).
 
     mode="pressure":
-        pressure_norm = 0~1 정규화 압력
-        색상: 파랑(저압) → 초록 → 빨강(고압)
+        pressure_norm = 0~1 normalized pressure
+        color: blue(low) → green → red(high)
 
     mode="airtrap":
-        pressure_norm = 복셀 타입 (0.0=표면복셀, 1.0=에어트랩)
-        색상: 0.0 → dim blue (작은 점), 1.0 → bright cyan (큰 점)
-        vent_coords: 벤트 추천 좌표 배열 (N,3) — 주황 다이아몬드로 표시
+        pressure_norm = voxel type (0.0=surface voxel, 1.0=air trap)
+        color: 0.0 → dim blue (small dot), 1.0 → bright cyan (large dot)
+        vent_coords: recommended vent coord array (N,3) — drawn as orange diamonds
 
-    Streamlit iframe에서 clientWidth가 0으로 잡히는 버그를
-    requestAnimationFrame 지연 resize로 해결합니다.
+    Fixes a Streamlit iframe bug where clientWidth is 0 on first mount;
+    defers initial resize via requestAnimationFrame.
     """
     import json as _json
 
     N = len(coords)
     if N == 0:
-        return "<p>복셀 데이터 없음</p>"
+        return "<p>No voxel data</p>"
 
     if N > max_points:
         idx      = np.linspace(0, N - 1, max_points, dtype=int)
@@ -864,40 +864,40 @@ def build_webgl_pressure_viewer(
     xyzp      = np.column_stack([coords_n, p_norm_s])
     xyzp_json = _json.dumps([[round(float(v), 3) for v in row] for row in xyzp])
 
-    # 벤트 좌표 정규화
+    # normalize vent coordinates
     vent_json = "[]"
     if mode == "airtrap" and vent_coords is not None and len(vent_coords) > 0:
         vc_n = ((np.array(vent_coords, dtype=np.float32) - center) / scale * 2.0)
         vent_json = _json.dumps([[round(float(v), 3) for v in row] for row in vc_n])
 
-    # 모드별 HUD/범례 텍스트
+    # mode-specific HUD / legend text
     if mode == "airtrap":
         hud_html = """
-  <div><span style="color:#557a99">에어트랩 </span>
-       <span style="color:#00ccff">■</span> 에어트랩 &nbsp;
-       <span style="color:#1a3a6a">■</span> 표면 복셀 &nbsp;
-       <span style="color:#ff6600">◆</span> 추천 벤트</div>
+  <div><span style="color:#557a99">Air Trap </span>
+       <span style="color:#00ccff">■</span> Air trap &nbsp;
+       <span style="color:#1a3a6a">■</span> Surface voxel &nbsp;
+       <span style="color:#ff6600">◆</span> Recommended vent</div>
   <div style="font-size:9px;color:#33556e;margin-top:4px">
-    좌클릭:회전 | 스크롤:줌 | 우클릭:이동</div>"""
+    Left-drag: Rotate | Scroll: Zoom | Right-drag: Pan</div>"""
         legend_html = ""
         color_fn_js = """
 function pointColor(p) {
-  // p=0 → 표면복셀(dim blue), p=1 → 에어트랩(bright cyan)
+  // p=0 → surface voxel (dim blue), p=1 → air trap (bright cyan)
   if (p >= 0.5) return {r:0,   g:180, b:255, a:0.90, radius:3.5};
   else          return {r:20,  g:60,  b:120, a:0.35, radius:1.8};
 }"""
     else:
         hud_html = """
-  <div><span style="color:#557a99">압력 분포 </span>
-       <span style="color:#ff4444">■</span>고압 →
-       <span style="color:#4444ff">■</span>저압</div>
+  <div><span style="color:#557a99">Pressure </span>
+       <span style="color:#ff4444">■</span>High →
+       <span style="color:#4444ff">■</span>Low</div>
   <div style="font-size:9px;color:#33556e;margin-top:4px">
-    좌클릭:회전 | 스크롤:줌 | 우클릭:이동</div>"""
+    Left-drag: Rotate | Scroll: Zoom | Right-drag: Pan</div>"""
         legend_html = """
 <div id="legend">
   <canvas id="legCvs" width="120" height="12"></canvas>
   <div style="display:flex;justify-content:space-between;color:#557a99">
-    <span>저압</span><span>고압</span></div>
+    <span>Low</span><span>High</span></div>
 </div>"""
         color_fn_js = """
 function pointColor(p) {
@@ -962,7 +962,7 @@ function resize() {{
   draw();
 }}
 window.addEventListener('resize', () => {{ resize(); }});
-// 첫 렌더: Streamlit iframe 마운트 후 크기가 확정될 때까지 RAF 대기
+// first render: wait via RAF until Streamlit iframe size is settled
 requestAnimationFrame(resize);
 
 {color_fn_js}
@@ -1001,7 +1001,7 @@ function draw() {{
     ctx.fill();
   }});
 
-  // 벤트 위치 — 주황 다이아몬드
+  // vent positions — orange diamonds
   VENTS.forEach((v, i) => {{
     const p = project(v[0],v[1],v[2]);
     if (!p) return;
@@ -1144,7 +1144,7 @@ def build_webgl_flow_viewer(
     js_gate_h     = round(gate_h_n,      5)
     js_gate_shape = gate_shape_js
 
-    # (Three.js HTML은 원본과 동일 — 생략 없이 그대로 반환)
+    # (Three.js HTML — returned as-is)
     html = f"""<!DOCTYPE html>
 <html style="margin:0;padding:0;height:100%;">
 <head>
@@ -1200,72 +1200,72 @@ input[type=range]{{accent-color:#4df0c0;cursor:pointer}}
   </div>
   <div id="viewport">
   <div id="hud">
-    <div><span class="lbl">충진률&nbsp;</span><span class="val" id="hFill">0.0%</span></div>
-    <div><span class="lbl">물리시간</span><span class="val" id="hTime">0.000 s</span></div>
-    <div><span class="lbl">표시복셀</span><span class="val" id="hVox">0</span></div>
-    <div style="margin-top:4px;font-size:9px;color:#2a4a60">좌클릭:회전 | 우클릭·중간:이동 | Shift+드래그:이동 | 스크롤:줌</div>
+    <div><span class="lbl">Fill&nbsp;</span><span class="val" id="hFill">0.0%</span></div>
+    <div><span class="lbl">Phys. time</span><span class="val" id="hTime">0.000 s</span></div>
+    <div><span class="lbl">Voxels</span><span class="val" id="hVox">0</span></div>
+    <div style="margin-top:4px;font-size:9px;color:#2a4a60">Left-drag: Rotate | Right/Mid: Pan | Shift+drag: Pan | Scroll: Zoom</div>
   </div>
   <div id="rpanel">
     <div id="rphead" onclick="toggleRPanel()">
-      <span>⚙ 표시 설정</span><span id="rptoggle">▲</span>
+      <span>⚙ Display Settings</span><span id="rptoggle">▲</span>
     </div>
     <div id="rpbody">
-      <div class="rtitle">색상 테마</div>
+      <div class="rtitle">Color Theme</div>
       <div class="rrow">
         <select class="rsel" id="selTheme" onchange="applyTheme(this.value)">
-          <option value="blueyellow">🔵→🟡 파랑→노랑 (기본)</option>
-          <option value="redwhite">🔴→⚪ 빨강→흰색</option>
-          <option value="greenorange">🟢→🟠 초록→주황</option>
-          <option value="rainbow">🌈 무지개</option>
-          <option value="heat">🌡 열화상</option>
-          <option value="cyan">🩵 시안 단색</option>
+          <option value="blueyellow">🔵→🟡 Blue→Yellow (default)</option>
+          <option value="redwhite">🔴→⚪ Red→White</option>
+          <option value="greenorange">🟢→🟠 Green→Orange</option>
+          <option value="rainbow">🌈 Rainbow</option>
+          <option value="heat">🌡 Heat map</option>
+          <option value="cyan">🩵 Cyan solid</option>
         </select>
       </div>
       <hr class="rdiv">
-      <div class="rtitle">복셀</div>
+      <div class="rtitle">Voxel</div>
       <div class="rrow">
-        <span class="rlbl">형상</span>
+        <span class="rlbl">Shape</span>
         <select class="rsel" id="selVoxShape" onchange="setVoxShape(this.value)">
-          <option value="box">■ 정육면체 (기본)</option>
-          <option value="sphere">● 구</option>
-          <option value="cylinder">⬤ 원기둥</option>
-          <option value="octahedron">◆ 팔면체</option>
+          <option value="box">■ Box (default)</option>
+          <option value="sphere">● Sphere</option>
+          <option value="cylinder">⬤ Cylinder</option>
+          <option value="octahedron">◆ Octahedron</option>
         </select>
       </div>
       <div class="rrow">
-        <span class="rlbl">투명도</span>
+        <span class="rlbl">Opacity</span>
         <input class="rslider" type="range" min="10" max="100" value="90"
                oninput="setVoxOpacity(this.value/100);document.getElementById('rvoxOp').textContent=this.value+'%'">
         <span class="rval" id="rvoxOp">90%</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">발광(emissive)</span>
+        <span class="rlbl">Emissive</span>
         <input class="rslider" type="range" min="0" max="100" value="55"
                oninput="setEmissive(this.value/100);document.getElementById('rvoxEm').textContent=this.value+'%'">
         <span class="rval" id="rvoxEm">55%</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">광택(shininess)</span>
+        <span class="rlbl">Shininess</span>
         <input class="rslider" type="range" min="0" max="150" value="60"
                oninput="setShininess(parseInt(this.value));document.getElementById('rvoxSh').textContent=this.value">
         <span class="rval" id="rvoxSh">60</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">크기</span>
+        <span class="rlbl">Size</span>
         <input class="rslider" type="range" min="50" max="200" value="100"
                oninput="setVoxSize(this.value/100);document.getElementById('rvoxSz').textContent=this.value+'%'">
         <span class="rval" id="rvoxSz">100%</span>
       </div>
       <hr class="rdiv">
-      <div class="rtitle">조명</div>
+      <div class="rtitle">Lighting</div>
       <div class="rrow">
-        <span class="rlbl">주변광</span>
+        <span class="rlbl">Ambient</span>
         <input class="rslider" type="range" min="0" max="200" value="120"
                oninput="setAmbient(this.value/100);document.getElementById('rAmb').textContent=this.value+'%'">
         <span class="rval" id="rAmb">120%</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">방향광</span>
+        <span class="rlbl">Directional</span>
         <input class="rslider" type="range" min="0" max="200" value="100"
                oninput="setDirLight(this.value/100);document.getElementById('rDir').textContent=this.value+'%'">
         <span class="rval" id="rDir">100%</span>
@@ -1273,49 +1273,49 @@ input[type=range]{{accent-color:#4df0c0;cursor:pointer}}
       <hr class="rdiv">
       <div class="rtitle">Wireframe</div>
       <div class="rrow">
-        <span class="rlbl">투명도</span>
+        <span class="rlbl">Opacity</span>
         <input class="rslider" type="range" min="0" max="100" value="18"
                oninput="setWireOp(this.value/100);document.getElementById('rwireOp').textContent=this.value+'%'">
         <span class="rval" id="rwireOp">18%</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">색상</span>
+        <span class="rlbl">Color</span>
         <input type="color" value="#ffffff"
                style="width:38px;height:20px;cursor:pointer;border:none;background:none"
                oninput="setWireColor(this.value)">
-        <span class="rval" style="font-size:9px;color:#3a6a8a">선택</span>
+        <span class="rval" style="font-size:9px;color:#3a6a8a">Pick</span>
       </div>
       <hr class="rdiv">
       <div class="rtitle">Solid Shell</div>
       <div class="rrow">
-        <span class="rlbl">투명도</span>
+        <span class="rlbl">Opacity</span>
         <input class="rslider" type="range" min="0" max="100" value="35"
                oninput="setSolidOp(this.value/100);document.getElementById('rsolOp').textContent=this.value+'%'">
         <span class="rval" id="rsolOp">35%</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">색상</span>
+        <span class="rlbl">Color</span>
         <input type="color" value="#3a6080"
                style="width:38px;height:20px;cursor:pointer;border:none;background:none"
                oninput="setSolidColor(this.value)">
-        <span class="rval" style="font-size:9px;color:#3a6a8a">선택</span>
+        <span class="rval" style="font-size:9px;color:#3a6a8a">Pick</span>
       </div>
       <div class="rrow">
-        <span class="rlbl">측면</span>
+        <span class="rlbl">Side</span>
         <select class="rsel" id="selSolidSide" onchange="setSolidSide(this.value)">
-          <option value="double">양면 (기본)</option>
-          <option value="front">앞면만</option>
-          <option value="back">뒷면만</option>
+          <option value="double">Double-sided (default)</option>
+          <option value="front">Front only</option>
+          <option value="back">Back only</option>
         </select>
       </div>
       <hr class="rdiv">
-      <div class="rtitle">배경</div>
+      <div class="rtitle">Background</div>
       <div class="rrow">
-        <span class="rlbl">배경색</span>
+        <span class="rlbl">Bg color</span>
         <input type="color" value="#07101f"
                style="width:38px;height:20px;cursor:pointer;border:none;background:none"
                oninput="setBg(this.value)">
-        <span class="rval" style="font-size:9px;color:#3a6a8a">선택</span>
+        <span class="rval" style="font-size:9px;color:#3a6a8a">Pick</span>
       </div>
     </div>
   </div>
@@ -1464,7 +1464,7 @@ def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
     thr_json  = _json.dumps([round(float(t), 4) for t in thresholds])
     nf        = num_frames
 
-    # (Canvas 2D fallback viewer — 원본과 동일하게 유지)
+    # (Canvas 2D fallback viewer — kept as-is)
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>*{{margin:0;padding:0;box-sizing:border-box}}body{{background:#0a0f1a;font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
 #wrap{{position:relative;width:100%;height:100%}}canvas{{display:block;width:100%;cursor:grab}}canvas:active{{cursor:grabbing}}
@@ -1482,10 +1482,10 @@ def build_flow3d_viewer(coords: np.ndarray, weights: np.ndarray,
 #fc{{font-size:11px;color:#4df0c0;min-width:55px;text-align:right}}
 </style></head><body>
 <div id="wrap"><canvas id="c"></canvas>
-<div id="hud"><div><span class="lbl">충진률 </span><span class="val" id="h-fill">0.0%</span></div>
-<div><span class="lbl">물리시간</span><span class="val" id="h-time">0.000 s</span></div>
-<div><span class="lbl">표시복셀</span><span class="val" id="h-vox">0</span></div>
-<div style="margin-top:4px;font-size:10px;color:#33556e">좌클릭:회전 | 우클릭·중간:이동 | Shift+드래그:이동 | 스크롤:줌</div></div>
+<div id="hud"><div><span class="lbl">Fill </span><span class="val" id="h-fill">0.0%</span></div>
+<div><span class="lbl">Phys. time</span><span class="val" id="h-time">0.000 s</span></div>
+<div><span class="lbl">Voxels</span><span class="val" id="h-vox">0</span></div>
+<div style="margin-top:4px;font-size:10px;color:#33556e">Left-drag: Rotate | Right/Mid: Pan | Shift+drag: Pan | Scroll: Zoom</div></div>
 <div id="ctrl">
 <div class="ctrl-row"><div id="prog-wrap"><div id="prog-bg"></div><div id="prog-fill"></div><div id="prog-thumb"></div></div><span id="fc">0 / {nf}</span></div>
 <div class="ctrl-row">
@@ -1521,14 +1521,14 @@ resize();updateUI();
 
 
 # ═══════════════════════════════════════════════════════════
-# UI — 탭 구조
+# UI — TAB LAYOUT
 # ═══════════════════════════════════════════════════════════
 
 tab1, tab2, tab3, tab4, tab_phase1, tab_phase2, tab_phase3 = st.tabs([
     "Simulation", "Material Library", "Results", "Settings",
-    "🔴 압력·웰드·에어트랩",   # Phase 1 (Day 1~3)
-    "🌡 온도·냉각",            # Phase 2 (Day 4~5)
-    "📐 수축·변형",            # Phase 3 (Day 6~7)
+    "🔴 Pressure·Weld·AirTrap",   # Phase 1 (Day 1~3)
+    "🌡 Temp·Cooling",            # Phase 2 (Day 4~5)
+    "📐 Shrinkage·Deform",        # Phase 3 (Day 6~7)
 ])
 
 # ═══════════════════════════════════════════════════════════
@@ -1538,10 +1538,10 @@ with tab1:
     st.header("Simulation Setup")
     col1, col2 = st.columns([1, 1], gap="large")
 
-    # ── 왼쪽: STL 업로드 및 3D 시각화 ──
+    # ── Left: STL upload & 3D visualization ──
     with col1:
         st.subheader("1️⃣ Part Upload")
-        uploaded_file = st.file_uploader("STL 파일 선택", type=["stl"])
+        uploaded_file = st.file_uploader("Select STL File", type=["stl"])
 
         if not uploaded_file:
             default_stl_path = "/app/input/part.stl"
@@ -1554,9 +1554,9 @@ with tab1:
                             st.session_state.loaded_file_id = "default_part.stl"
                             st.session_state.gate_suggestions = []
                             st.session_state.gate_ai_advice = ""
-                            st.success("✅ 기본 STL 파일(input/part.stl) 자동 로드됨")
+                            st.success("✅ Default STL file (input/part.stl) loaded automatically")
                     except Exception as e:
-                        st.error(f"기본 파일 로드 오류: {e}")
+                        st.error(f"Default file load error: {e}")
 
         if uploaded_file:
             file_id = uploaded_file.file_id if hasattr(uploaded_file, 'file_id') else uploaded_file.name
@@ -1580,13 +1580,13 @@ with tab1:
             with col_info3:
                 st.metric("Faces", f"{len(mesh.faces)}")
 
-            with st.expander("💾 RAM 예측 및 해상도 추천", expanded=False):
+            with st.expander("💾 RAM Estimate & Resolution Advisor", expanded=False):
                 render_ram_advisor(mesh)
 
             st.subheader("2️⃣ Gate Position & Size")
 
-            if st.button("🎯 게이트 위치 추천", use_container_width=True):
-                with st.spinner("게이트 위치 분석 중..."):
+            if st.button("🎯 Suggest Gate Position", use_container_width=True):
+                with st.spinner("Analyzing gate position..."):
                     suggestions = suggest_gate_positions(mesh)
                     st.session_state.gate_suggestions = suggestions
                     ai_advice = get_ai_gate_advice(mesh, st.session_state.material)
@@ -1594,7 +1594,7 @@ with tab1:
                         st.session_state.gate_ai_advice = ai_advice
 
             if st.session_state.gate_suggestions:
-                st.markdown("**추천 게이트 위치:**")
+                st.markdown("**Recommended Gate Positions:**")
                 for i, sugg in enumerate(st.session_state.gate_suggestions):
                     col_btn, col_info = st.columns([1, 3])
                     with col_btn:
@@ -1607,9 +1607,9 @@ with tab1:
                         st.caption(f"📍 {sugg['reason']}")
 
             if st.session_state.gate_ai_advice:
-                st.info(f"🤖 **AI 조언:** {st.session_state.gate_ai_advice}")
+                st.info(f"🤖 **AI Advice:** {st.session_state.gate_ai_advice}")
 
-            st.markdown("**또는 수동으로 설정:**")
+            st.markdown("**Or set manually:**")
             col_gx, col_gy, col_gz = st.columns(3)
             with col_gx:
                 st.session_state.gate_x = st.number_input("Gate X (mm)", value=st.session_state.gate_x)
@@ -1619,70 +1619,70 @@ with tab1:
                 st.session_state.gate_z = st.number_input("Gate Z (mm)", value=st.session_state.gate_z)
 
             st.divider()
-            st.markdown("##### 📐 게이트 크기 설정")
+            st.markdown("##### 📐 Gate Size Configuration")
             gate_rec = calc_gate_size_recommendation(mesh, st.session_state.material)
 
             if "error" not in gate_rec:
-                with st.expander("📊 공식 기반 추천 게이트 크기 (클릭하여 확인)", expanded=True):
-                    st.markdown(f"**공정:** {gate_rec['process']}")
+                with st.expander("📊 Formula-based Gate Size Recommendation", expanded=True):
+                    st.markdown(f"**Process:** {gate_rec['process']}")
                     rc1, rc2, rc3 = st.columns(3)
                     with rc1:
-                        st.metric("추천 두께 (t)", f"{gate_rec['t_gate']} mm", help=gate_rec['formula_t'])
+                        st.metric("Recommended thickness (t)", f"{gate_rec['t_gate']} mm", help=gate_rec['formula_t'])
                     with rc2:
-                        st.metric("추천 폭 (W)", f"{gate_rec['w_gate']} mm", help=gate_rec['formula_w'])
+                        st.metric("Recommended width (W)", f"{gate_rec['w_gate']} mm", help=gate_rec['formula_w'])
                     with rc3:
-                        st.metric("원형 환산 직경 (d)", f"{gate_rec['d_gate']} mm", help="d = 2×√(W×t/π)")
+                        st.metric("Circular equiv. diameter (d)", f"{gate_rec['d_gate']} mm", help="d = 2×√(W×t/π)")
 
                     sr_icon = "🔴" if gate_rec['warn_rect'] else "🟢"
                     st.caption(
-                        f"{sr_icon} 직사각형 전단율: **{gate_rec['shear_rect']:,} /s** "
-                        f"(허용: {gate_rec['shear_limit']:,}/s) &nbsp;|&nbsp; "
-                        f"{'🔴' if gate_rec['warn_circ'] else '🟢'} 원형 전단율: **{gate_rec['shear_circ']:,} /s**"
+                        f"{sr_icon} Rect. shear rate: **{gate_rec['shear_rect']:,} /s** "
+                        f"(limit: {gate_rec['shear_limit']:,}/s) &nbsp;|&nbsp; "
+                        f"{'🔴' if gate_rec['warn_circ'] else '🟢'} Circ. shear rate: **{gate_rec['shear_circ']:,} /s**"
                     )
-                    st.caption(f"부품 체적: {gate_rec['vol_mm3']} mm³ | 표면적: {gate_rec['surf_mm2']} mm² | 추정 벽두께: {gate_rec['t_wall_est']} mm")
+                    st.caption(f"Part volume: {gate_rec['vol_mm3']} mm³ | Surface area: {gate_rec['surf_mm2']} mm² | Est. wall thickness: {gate_rec['t_wall_est']} mm")
 
                     bc1, bc2 = st.columns(2)
                     with bc1:
-                        if st.button("✅ 추천값으로 직사각형 게이트 적용", use_container_width=True):
+                        if st.button("✅ Apply Rectangular Gate (recommended)", use_container_width=True):
                             st.session_state.gate_shape  = "rectangular"
                             st.session_state.gate_width  = float(gate_rec['w_gate'])
                             st.session_state.gate_height = float(gate_rec['t_gate'])
                             st.session_state.gate_dia    = float(gate_rec['d_gate'])
                             st.rerun()
                     with bc2:
-                        if st.button("✅ 추천값으로 원형 게이트 적용", use_container_width=True):
+                        if st.button("✅ Apply Circular Gate (recommended)", use_container_width=True):
                             st.session_state.gate_shape = "circular"
                             st.session_state.gate_dia   = float(gate_rec['d_gate'])
                             st.rerun()
 
-            gate_shape_opt = {"원형 (Circular)": "circular", "직사각형 (Rectangular)": "rectangular"}
+            gate_shape_opt = {"Circular": "circular", "Rectangular": "rectangular"}
             cur_shape_label = [k for k, v in gate_shape_opt.items() if v == st.session_state.gate_shape][0]
-            chosen_label = st.selectbox("게이트 형상", list(gate_shape_opt.keys()),
+            chosen_label = st.selectbox("Gate Shape", list(gate_shape_opt.keys()),
                                          index=list(gate_shape_opt.keys()).index(cur_shape_label),
                                          key="gate_shape_sel")
             st.session_state.gate_shape = gate_shape_opt[chosen_label]
 
             if st.session_state.gate_shape == "circular":
                 st.session_state.gate_dia = st.number_input(
-                    "원형 게이트 직경 (mm)", min_value=0.3, max_value=15.0,
+                    "Circular Gate Diameter (mm)", min_value=0.3, max_value=15.0,
                     value=float(st.session_state.gate_dia), step=0.1,
-                    help="최소 0.3 mm / MIM 일반: 0.5~3 mm / 플라스틱: 1~5 mm"
+                    help="Min 0.3 mm / MIM typical: 0.5~3 mm / Plastic: 1~5 mm"
                 )
-                st.caption(f"단면적: {np.pi*(st.session_state.gate_dia/2)**2:.2f} mm²")
+                st.caption(f"Cross-section area: {np.pi*(st.session_state.gate_dia/2)**2:.2f} mm²")
             else:
                 gw_col, gh_col = st.columns(2)
                 with gw_col:
                     st.session_state.gate_width = st.number_input(
-                        "게이트 가로 폭 W (mm)", min_value=0.3, max_value=20.0,
+                        "Gate Width W (mm)", min_value=0.3, max_value=20.0,
                         value=float(st.session_state.gate_width), step=0.1
                     )
                 with gh_col:
                     st.session_state.gate_height = st.number_input(
-                        "게이트 세로 두께 t (mm)", min_value=0.3, max_value=10.0,
+                        "Gate Thickness t (mm)", min_value=0.3, max_value=10.0,
                         value=float(st.session_state.gate_height), step=0.1
                     )
                 gate_area = st.session_state.gate_width * st.session_state.gate_height
-                st.caption(f"단면적: {gate_area:.2f} mm² | 원형 환산 직경: {2*np.sqrt(gate_area/np.pi):.2f} mm")
+                st.caption(f"Cross-section: {gate_area:.2f} mm² | Circular equiv. diameter: {2*np.sqrt(gate_area/np.pi):.2f} mm")
 
             st.subheader("3D Visualization")
             html_3d = visualize_mesh_with_gate(
@@ -1692,9 +1692,9 @@ with tab1:
             if html_3d:
                 components.html(html_3d, height=560, scrolling=False)
         else:
-            st.info("💡 STL 파일을 업로드하면 3D 뷰어가 표시됩니다.")
+            st.info("💡 Upload an STL file to display the 3D viewer.")
 
-    # ── 오른쪽: 시뮬레이션 파라미터 ──
+    # ── Right: simulation parameters ──
     with col2:
         st.subheader("3️⃣ Process Parameters")
 
@@ -1715,16 +1715,16 @@ with tab1:
 
         if st.session_state.props:
             props = st.session_state.props
-            with st.expander("📊 재료 정보"):
+            with st.expander("📊 Material Properties"):
                 col_p1, col_p2 = st.columns(2)
                 with col_p1:
-                    st.write(f"**점도:** {props.get('nu', 0):.2e} m²/s")
-                    st.write(f"**밀도:** {props.get('rho', 0):.0f} kg/m³")
-                    st.write(f"**용융점:** {props.get('Tmelt', 0):.1f} °C")
+                    st.write(f"**Viscosity:** {props.get('nu', 0):.2e} m²/s")
+                    st.write(f"**Density:** {props.get('rho', 0):.0f} kg/m³")
+                    st.write(f"**Melt Temp:** {props.get('Tmelt', 0):.1f} °C")
                 with col_p2:
-                    st.write(f"**금형온도:** {props.get('Tmold', 0):.1f} °C")
-                    st.write(f"**권장 압력:** {props.get('press_mpa', 0):.1f} MPa")
-                    st.write(f"**권장 속도:** {props.get('vel_mms', 0):.1f} mm/s")
+                    st.write(f"**Mold Temp:** {props.get('Tmold', 0):.1f} °C")
+                    st.write(f"**Recommended Pressure:** {props.get('press_mpa', 0):.1f} MPa")
+                    st.write(f"**Recommended Velocity:** {props.get('vel_mms', 0):.1f} mm/s")
 
         st.divider()
 
@@ -1748,10 +1748,10 @@ with tab1:
         if "mesh_res_mm" not in st.session_state:
             st.session_state.mesh_res_mm = 1.0
         st.session_state.mesh_res_mm = st.slider(
-            "Voxel Resolution (mm) — 낮을수록 정밀하지만 느림",
+            "Voxel Resolution (mm) — lower = finer but slower",
             min_value=0.02, max_value=3.0,
             value=st.session_state.mesh_res_mm, step=0.02,
-            help="0.5mm = 정밀 (메모리 많이 사용) / 1.0mm = 권장 / 2.0mm = 빠름"
+            help="0.5mm = fine (high memory) / 1.0mm = recommended / 2.0mm = fast"
         )
 
         if st.session_state.mesh:
@@ -1759,14 +1759,14 @@ with tab1:
             _res = st.session_state.mesh_res_mm
             _est_v, _est_ram = estimate_ram_gb(_m, _res)
             if _est_ram < 8:
-                _ram_icon, _ram_msg = "🟢", "안전"
+                _ram_icon, _ram_msg = "🟢", "Safe"
             elif _est_ram < 14:
-                _ram_icon, _ram_msg = "🟡", "주의 — 해상도를 높이는 것(값 크게) 권장"
+                _ram_icon, _ram_msg = "🟡", "Caution — consider increasing resolution value"
             else:
-                _ram_icon, _ram_msg = "🔴", "위험 — OOM 가능. 해상도를 높이세요"
+                _ram_icon, _ram_msg = "🔴", "Danger — OOM risk. Increase resolution value"
             st.caption(
-                f"{_ram_icon} **{_res:.1f}mm** → 예상 RAM **{_est_ram:.1f} GB** "
-                f"| 복셀 수 **{_est_v:,}** | {_ram_msg}"
+                f"{_ram_icon} **{_res:.1f}mm** → Est. RAM **{_est_ram:.1f} GB** "
+                f"| Voxel count **{_est_v:,}** | {_ram_msg}"
             )
 
         # ════════════════════════════════════════════════
@@ -1774,76 +1774,76 @@ with tab1:
         # ════════════════════════════════════════════════
         st.divider()
         with st.expander("⚙️ Advanced Solver Parameters", expanded=False):
-            st.markdown("##### 🧱 벽면 마찰 (Wall Friction)")
+            st.markdown("##### 🧱 Wall Friction")
             st.session_state.wall_friction_k = st.slider(
                 "Wall Friction Strength (k)",
                 min_value=0.0, max_value=10.0,
                 value=float(st.session_state.wall_friction_k),
                 step=0.5,
                 help=(
-                    "Dijkstra 엣지 가중치에 벽면 마찰을 추가합니다.\n\n"
-                    "• **0.0** = 마찰 없음 (순수 거리 기반)\n"
-                    "• **3.0** = MIM 기본 권장값\n"
-                    "• **5.0+** = 얇은 리브·세부 형상 강조\n\n"
-                    "값이 클수록 벽 근처 복셀의 유동 저항이 증가해 "
-                    "게이트 근처에서 내부로 먼저 채워지는 효과가 나타납니다."
+                    "Adds wall friction to Dijkstra edge weights.\n\n"
+                    "• **0.0** = no friction (pure distance-based)\n"
+                    "• **3.0** = MIM default recommended\n"
+                    "• **5.0+** = emphasizes thin ribs and fine features\n\n"
+                    "Higher values increase flow resistance near walls, "
+                    "causing fill to proceed from gate inward first."
                 ),
             )
-            # 값 설명 인라인 표시
+            # inline caption for current slider value
             wfk = st.session_state.wall_friction_k
             if wfk == 0.0:
-                st.caption("💡 마찰 비활성 — 순수 Dijkstra 최단거리만 사용")
+                st.caption("💡 Friction disabled — pure Dijkstra shortest path only")
             elif wfk <= 2.0:
-                st.caption("💡 약한 마찰 — 내부 우선 충전 경향 약간 반영")
+                st.caption("💡 Weak friction — slight inward-fill preference")
             elif wfk <= 4.0:
-                st.caption("💡 MIM 권장 범위 — 벽면 점착 효과 적절히 반영")
+                st.caption("💡 MIM recommended range — wall adhesion effect well balanced")
             elif wfk <= 7.0:
-                st.caption("💡 강한 마찰 — 얇은 리브·좁은 채널 모사에 적합")
+                st.caption("💡 Strong friction — suitable for thin ribs and narrow channels")
             else:
-                st.caption("⚠️ 매우 강한 마찰 — 수치 발산 가능성. 주의해서 사용하세요.")
+                st.caption("⚠️ Very strong friction — numerical divergence possible. Use with caution.")
 
             st.markdown("---")
-            st.markdown("##### 📉 거리 기반 속도 감쇠 (Flow Decay)")
+            st.markdown("##### 📉 Distance-based Flow Decay")
             st.session_state.flow_decay = st.slider(
                 "Flow Decay (k)",
                 min_value=0.0, max_value=2.0,
                 value=float(st.session_state.flow_decay),
                 step=0.1,
                 help=(
-                    "게이트에서 멀어질수록 유동 속도를 감쇠시키는 후처리 계수입니다.\n\n"
-                    "물리적 근거: v = v₀ / (1 + k·d)  →  time ∝ d + k·d²\n\n"
-                    "• **0.0** = 감쇠 없음 (선형 충전)\n"
-                    "• **0.5** = 기본 권장값\n"
-                    "• **1.0** = 강한 감쇠 (원거리 충전 지연 강조)\n\n"
-                    "⚠️ 이 값은 **애니메이션 표시용** display_weights에만 적용되며 "
-                    "npz에 저장되는 raw Dijkstra 결과에는 영향을 주지 않습니다."
+                    "Post-processing coefficient that decays flow speed with distance from gate.\n\n"
+                    "Physics: v = v₀ / (1 + k·d)  →  time ∝ d + k·d²\n\n"
+                    "• **0.0** = no decay (linear fill)\n"
+                    "• **0.5** = default recommended\n"
+                    "• **1.0** = strong decay (emphasizes far-fill delay)\n\n"
+                    "⚠️ Applied only to **display_weights** (animation); "
+                    "does not affect the raw Dijkstra result stored in the npz."
                 ),
             )
             fdk = st.session_state.flow_decay
             if fdk == 0.0:
-                st.caption("💡 감쇠 비활성 — 균일 속도로 충전 표시")
+                st.caption("💡 Decay disabled — uniform fill speed displayed")
             elif fdk <= 0.5:
-                st.caption("💡 기본 감쇠 — 원거리 충전 지연이 애니메이션에 자연스럽게 반영")
+                st.caption("💡 Default decay — far-fill delay naturally reflected in animation")
             else:
-                st.caption("💡 강한 감쇠 — 원거리 복셀 충전이 애니메이션 후반에 집중")
+                st.caption("💡 Strong decay — far voxel fill concentrated in later animation frames")
 
         st.divider()
 
         api_ok, api_msg = check_api_connection(ORACLE_API_URL)
         if api_ok:
-            st.success("✅ Oracle Cloud API 연결됨")
+            st.success("✅ Oracle Cloud API connected")
         else:
             st.warning(
-                f"⚠️ Oracle Cloud API 연결 실패: {api_msg}\n\n"
-                "Settings 탭에서 API URL/KEY를 확인하세요. "
-                "연결 실패 상태에서도 제출은 가능합니다."
+                f"⚠️ Oracle Cloud API connection failed: {api_msg}\n\n"
+                "Check API URL/KEY in the Settings tab. "
+                "Submission is still possible even when disconnected."
             )
 
         if st.button("🚀 Run Simulation", use_container_width=True, type="primary"):
             if not uploaded_file and not st.session_state.get("mesh"):
-                st.error("❌ STL 파일을 먼저 업로드하세요!")
+                st.error("❌ Please upload an STL file first!")
             else:
-                with st.spinner("시뮬레이션 제출 중..."):
+                with st.spinner("Submitting simulation..."):
                     if uploaded_file:
                         stl_bytes = uploaded_file.getbuffer()
                     else:
@@ -1852,7 +1852,7 @@ with tab1:
                             with open(default_stl_path, "rb") as f:
                                 stl_bytes = f.read()
                         else:
-                            st.error("❌ 업로드된 STL 파일이 없습니다!")
+                            st.error("❌ No STL file uploaded!")
                             stl_bytes = None
 
                     if stl_bytes:
@@ -1872,7 +1872,7 @@ with tab1:
                             "etime":           st.session_state.etime,
                             "num_frames":      15,
                             "mesh_res_mm":     st.session_state.get("mesh_res_mm", 1.0),
-                            # ★ 신규 파라미터 전달
+                            # ★ PASS NEW PARAMETERS
                             "wall_friction_k": st.session_state.wall_friction_k,
                             "flow_decay":      st.session_state.flow_decay,
                         }
@@ -1882,9 +1882,9 @@ with tab1:
                         if result:
                             st.session_state.job_id     = result.get("job_id")
                             st.session_state.sim_status = "submitted"
-                            st.success(f"✅ 시뮬레이션 제출됨 (Job ID: {st.session_state.job_id})")
+                            st.success(f"✅ Simulation submitted (Job ID: {st.session_state.job_id})")
                         else:
-                            st.error("❌ 시뮬레이션 제출 실패 — API 서버 응답을 확인하세요.")
+                            st.error("❌ Simulation submission failed — check API server response.")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 2: MATERIAL LIBRARY
@@ -1892,8 +1892,8 @@ with tab1:
 with tab2:
     st.header("Material Library")
     materials_db = load_material_db(MATERIAL_FILE)
-    st.markdown(f"**총 {len(materials_db)}개 재료 데이터베이스**")
-    search = st.text_input("재료 검색", placeholder="예: PA66, CATAMOLD")
+    st.markdown(f"**{len(materials_db)} materials in database**")
+    search = st.text_input("Search material", placeholder="e.g. PA66, CATAMOLD")
     filtered_materials = {k: v for k, v in materials_db.items() if search.upper() in k or not search}
 
     if filtered_materials:
@@ -1910,7 +1910,7 @@ with tab2:
             })
         st.dataframe(df_data, use_container_width=True)
     else:
-        st.info("검색 결과가 없습니다.")
+        st.info("No results found.")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 3: RESULTS
@@ -1919,7 +1919,7 @@ with tab3:
     st.header("Simulation Results")
 
     if not st.session_state.job_id:
-        st.info("아직 시뮬레이션을 실행하지 않았습니다.")
+        st.info("No simulation has been run yet.")
     else:
         st.write(f"**Job ID:** `{st.session_state.job_id}`")
 
@@ -1928,7 +1928,7 @@ with tab3:
             if st.button("🔄 Refresh"):
                 st.rerun()
 
-        with st.spinner("상태 조회 중..."):
+        with st.spinner("Checking status..."):
             status = get_job_status(st.session_state.job_id)
 
             if status:
@@ -1936,39 +1936,39 @@ with tab3:
                 current_status = st.session_state.sim_status
 
                 if current_status == "completed":
-                    st.success("✅ 시뮬레이션 완료")
+                    st.success("✅ Simulation complete")
                 elif current_status == "running":
                     progress_val = status.get("progress", 0)
-                    st.info(f"⏳ 실행 중... ({progress_val}%)")
+                    st.info(f"⏳ Running... ({progress_val}%)")
                     st.progress(progress_val / 100)
-                    st.caption("⏱ 5초마다 자동 갱신됩니다...")
+                    st.caption("⏱ Auto-refreshing every 5 seconds...")
                     time.sleep(5)
                     st.rerun()
                 elif current_status == "queued":
-                    st.info("📋 대기 중...")
+                    st.info("📋 Queued...")
                     time.sleep(3)
                     st.rerun()
                 elif current_status in ("failed", "error", "timeout"):
-                    error_msg = status.get("error") or "알 수 없는 오류"
-                    st.error(f"❌ **시뮬레이션 실패** ({current_status})")
-                    st.error(f"오류 내용: {error_msg}")
+                    error_msg = status.get("error") or "Unknown error"
+                    st.error(f"❌ **Simulation failed** ({current_status})")
+                    st.error(f"Error: {error_msg}")
                     log_lines = status.get("log", [])
                     if log_lines:
-                        with st.expander("📋 솔버 로그 (마지막 100줄)", expanded=True):
+                        with st.expander("📋 Solver log (last 100 lines)", expanded=True):
                             st.code("\n".join(log_lines), language="text")
                     is_oom = any(kw in error_msg for kw in
                                  ["MemoryError", "OOM", "Killed", "killed", "memory", "code -9", "-9"])
                     if is_oom:
                         st.warning(
-                            "💡 **RAM 부족 (OOM Killer) 오류가 감지되었습니다.**\n\n"
-                            "`exit code -9` = Linux 커널이 메모리 초과로 프로세스를 강제 종료한 것입니다.\n\n"
-                            "**해결 방법:** Simulation 탭 → 해상도 슬라이더를 올려 (숫자 크게, 예: 1.0mm → 1.5mm)\n"
-                            "슬라이더 아래 🟢 표시가 될 때까지 조정 후 재시도하세요."
+                            "💡 **Out of memory (OOM Killer) error detected.**\n\n"
+                            "`exit code -9` = The Linux kernel forcibly killed the process due to memory overflow.\n\n"
+                            "**Fix:** Go to Simulation tab → increase the resolution slider (higher value, e.g. 1.0mm → 1.5mm)\n"
+                            "until the 🟢 indicator appears below the slider, then retry."
                         )
                 else:
-                    st.warning(f"⚠️ 상태: {current_status}")
+                    st.warning(f"⚠️ Status: {current_status}")
 
-                with st.expander("📊 상세 정보"):
+                with st.expander("📊 Details"):
                     st.json(status)
 
                 if current_status == "completed":
@@ -1977,7 +1977,7 @@ with tab3:
 
                     if ("last_result" not in st.session_state or
                             st.session_state.get("last_result_job") != st.session_state.job_id):
-                        with st.spinner("결과 로드 중..."):
+                        with st.spinner("Loading results..."):
                             results = get_results(st.session_state.job_id)
                             if results:
                                 st.session_state.last_result     = results
@@ -1987,17 +1987,17 @@ with tab3:
 
                     if results:
                         k1, k2, k3, k4 = st.columns(4)
-                        k1.metric("충진 시간",
+                        k1.metric("Fill Time",
                                   f"{results.get('theo_fill_time', results.get('fill_time_s', '—'))} s")
-                        k2.metric("최고 속도",
+                        k2.metric("Max Velocity",
                                   f"{results.get('max_vel_mms', results.get('max_velocity_mms', '—'))} mm/s")
-                        k3.metric("복셀 수",
+                        k3.metric("Voxel Count",
                                   f"{results.get('num_voxels', results.get('n_voxels', '—')):,}"
                                   if isinstance(results.get('num_voxels', results.get('n_voxels')), int)
                                   else str(results.get('num_voxels', results.get('n_voxels', '—'))))
-                        k4.metric("해상도", f"{results.get('res_mm', '—')} mm")
+                        k4.metric("Resolution", f"{results.get('res_mm', '—')} mm")
 
-                        # ★ solver 파라미터 요약 표시
+                        # ★ solver parameter summary
                         if results.get("wall_friction_k") is not None:
                             st.caption(
                                 f"🧱 Wall Friction k = **{results['wall_friction_k']}** &nbsp;|&nbsp; "
@@ -2008,7 +2008,7 @@ with tab3:
                     frame_err_key   = f"frames_err_{st.session_state.job_id}"
 
                     if frame_cache_key not in st.session_state:
-                        with st.spinner("프레임 이미지 로드 중..."):
+                        with st.spinner("Loading frame images..."):
                             frames, err = get_frames(st.session_state.job_id)
                             st.session_state[frame_cache_key] = frames
                             st.session_state[frame_err_key]   = err
@@ -2017,9 +2017,9 @@ with tab3:
                     frame_err = st.session_state.get(frame_err_key, None)
 
                     if frames:
-                        viewer_h  = st.slider("뷰어 높이 (px)", 400, 1000, 700, 50, key="frame_viewer_h")
+                        viewer_h  = st.slider("Viewer height (px)", 400, 1000, 700, 50, key="frame_viewer_h")
                         frame_idx = st.slider(
-                            f"프레임  (총 {len(frames)}개)",
+                            f"Frame  (total {len(frames)})",,
                             min_value=1, max_value=len(frames),
                             value=st.session_state.get("frame_slider", 1),
                             step=1, key="frame_slider",
@@ -2040,39 +2040,39 @@ with tab3:
                         )
                         bc1, bc2, bc3 = st.columns(3)
                         with bc1:
-                            if st.button("⏮ 처음", use_container_width=True):
+                            if st.button("⏮ First", use_container_width=True):
                                 st.session_state["frame_slider"] = 1
                                 st.rerun()
                         with bc2:
-                            if st.button("◀ 이전", use_container_width=True, disabled=(frame_idx <= 1)):
+                            if st.button("◀ Prev", use_container_width=True, disabled=(frame_idx <= 1)):
                                 st.session_state["frame_slider"] = frame_idx - 1
                                 st.rerun()
                         with bc3:
-                            if st.button("다음 ▶", use_container_width=True, disabled=(frame_idx >= len(frames))):
+                            if st.button("Next ▶", use_container_width=True, disabled=(frame_idx >= len(frames))):
                                 st.session_state["frame_slider"] = frame_idx + 1
                                 st.rerun()
                     else:
-                        st.warning("⚠️ 프레임 이미지를 서버에서 불러올 수 없습니다.")
+                        st.warning("⚠️ Could not load frame images from server.")
                         if frame_err:
-                            with st.expander("🔍 오류 상세", expanded=True):
+                            with st.expander("🔍 Error details", expanded=True):
                                 st.code(frame_err)
-                        st.caption("↩ 재시도하려면 아래 버튼을 누르세요.")
-                        if st.button("🔄 프레임 다시 불러오기"):
+                        st.caption("↩ Click the button below to retry.")
+                        if st.button("🔄 Reload frames"):
                             del st.session_state[frame_cache_key]
                             if frame_err_key in st.session_state:
                                 del st.session_state[frame_err_key]
                             st.rerun()
 
                         st.divider()
-                        st.markdown("**대체 뷰어: 복셀 3D 인터랙티브**")
+                        st.markdown("**Fallback viewer: Voxel 3D Interactive**")
                         vc1, vc2, vc3 = st.columns(3)
-                        with vc1: n_frames_v = st.slider("프레임 수",  15, 60, 30, 5)
-                        with vc2: max_pts    = st.slider("최대 복셀 수", 2000, 15000, 6000, 1000)
-                        with vc3: viewer_h_v = st.slider("뷰어 높이 (px)", 400, 900, 580, 50)
+                        with vc1: n_frames_v = st.slider("Frame count",  15, 60, 30, 5)
+                        with vc2: max_pts    = st.slider("Max voxels", 2000, 15000, 6000, 1000)
+                        with vc3: viewer_h_v = st.slider("Viewer height (px)", 400, 900, 580, 50)
 
                         cache_key = f"voxel_{st.session_state.job_id}"
                         if cache_key not in st.session_state:
-                            with st.spinner("복셀 데이터 로드 중..."):
+                            with st.spinner("Loading voxel data..."):
                                 coords, weights = get_voxel_data(st.session_state.job_id)
                                 st.session_state[cache_key] = (
                                     (coords, weights) if coords is not None else None
@@ -2086,20 +2086,20 @@ with tab3:
                             viewer_html = viewer_html.replace("window.FILL_TIME || 1.0", f"window.FILL_TIME || {float(fill_time)}")
                             st.components.v1.html(viewer_html, height=viewer_h_v, scrolling=False)
                         else:
-                            st.info("복셀 데이터도 없습니다. 서버의 `/api/frames` 또는 `/api/voxels` 엔드포인트를 확인하세요.")
+                            st.info("No voxel data available. Check the `/api/frames` or `/api/voxels` endpoint on the server.")
 
                     st.divider()
-                    st.subheader("🧊 3D WebGL 인터랙티브 뷰어")
-                    st.caption("STL 형상(wireframe) 위에 복셀이 프레임별로 채워지는 WebGL 뷰어입니다.")
+                    st.subheader("🧊 3D WebGL Interactive Viewer")
+                    st.caption("WebGL viewer showing voxels filling frame-by-frame over the STL wireframe.")
 
                     wv_col1, wv_col2, wv_col3 = st.columns(3)
-                    with wv_col1: wv_frames = st.slider("프레임 수",   10, 30, 15, 5, key="wv_frames")
-                    with wv_col2: wv_maxvox = st.slider("최대 복셀 수", 5000, 80000, 30000, 5000, key="wv_maxvox")
-                    with wv_col3: wv_h      = st.slider("뷰어 높이 (px)", 400, 900, 640, 50, key="wv_h")
+                    with wv_col1: wv_frames = st.slider("Frame count",   10, 30, 15, 5, key="wv_frames")
+                    with wv_col2: wv_maxvox = st.slider("Max voxels", 5000, 80000, 30000, 5000, key="wv_maxvox")
+                    with wv_col3: wv_h      = st.slider("Viewer height (px)", 400, 900, 640, 50, key="wv_h")
 
                     wv_cache_key = f"webgl_{st.session_state.job_id}_{wv_frames}_{wv_maxvox}"
                     if wv_cache_key not in st.session_state:
-                        with st.spinner("3D WebGL 뷰어 빌드 중 (voxel_data.npz 로드)..."):
+                        with st.spinner("Building 3D WebGL viewer (loading voxel_data.npz)..."):
                             wv_coords, wv_weights = get_voxel_data(st.session_state.job_id)
                             if wv_coords is not None:
                                 stl_mesh = st.session_state.get("mesh", None)
@@ -2125,17 +2125,17 @@ with tab3:
                     wv_html_out = st.session_state.get(wv_cache_key)
                     if wv_html_out:
                         st.components.v1.html(wv_html_out, height=wv_h, scrolling=False)
-                        if st.button("🔄 3D 뷰어 재생성", key="wv_regen"):
+                        if st.button("🔄 Regenerate 3D viewer", key="wv_regen"):
                             del st.session_state[wv_cache_key]
                             st.rerun()
                     else:
-                        st.info("복셀 데이터를 불러올 수 없습니다. 서버의 `/api/voxels/{job_id}` 엔드포인트를 확인하세요.")
+                        st.info("Could not load voxel data. Check the `/api/voxels/{job_id}` endpoint on the server.")
 
-                    with st.expander("📄 결과 데이터 (JSON)"):
+                    with st.expander("📄 Result data (JSON)"):
                         if results:
                             st.json(results)
                         else:
-                            st.info("결과 JSON 없음")
+                            st.info("No result JSON available")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 4: SETTINGS
@@ -2152,9 +2152,9 @@ with tab4:
             check_api_connection.clear()
             ok, msg = check_api_connection(ORACLE_API_URL)
             if ok:
-                st.success("✅ 연결 성공!")
+                st.success("✅ Connection successful!")
             else:
-                st.error(f"❌ 연결 실패: {msg}")
+                st.error(f"❌ Connection failed: {msg}")
 
     with col2:
         st.subheader("Application Info")
@@ -2173,60 +2173,60 @@ with tab4:
 # TAB PHASE 1: 압력·웰드·에어트랩
 # ═══════════════════════════════════════════════════════════
 with tab_phase1:
-    st.header("🔴 압력 분포 / 웰드라인 / 에어트랩")
+    st.header("🔴 Pressure Distribution / Weld Line / Air Trap")
 
     if not st.session_state.get("job_id"):
-        st.info("먼저 [Simulation] 탭에서 시뮬레이션을 실행하세요.")
+        st.info("Please run a simulation in the [Simulation] tab first.")
         st.stop()
 
     job_id    = st.session_state.job_id
     cache_key = f"voxel_full_{job_id}"
 
     if cache_key not in st.session_state:
-        with st.spinner("해석 데이터 로드 중..."):
+        with st.spinner("Loading analysis data..."):
             st.session_state[cache_key] = get_voxel_data_full(job_id)
 
     vdata = st.session_state.get(cache_key)
 
-    # ── 압력 분포 섹션 ──
-    st.subheader("🔴 압력 분포")
-    st.caption("게이트(최고압) → 유동선단(0압) / BFS 가중치 역산")
+    # ── Pressure distribution section ──
+    st.subheader("🔴 Pressure Distribution")
+    st.caption("Gate (max pressure) → flow front (0 pressure) / BFS weight inversion")
 
     if vdata is not None and "pressure" in vdata:
         pressure_arr = vdata["pressure"]
         coords_arr   = vdata["coords"]
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("최대 압력", f"{pressure_arr.max():.1f} MPa")
-        col2.metric("평균 압력", f"{pressure_arr.mean():.1f} MPa")
-        col3.metric("최소 압력", f"{pressure_arr.min():.1f} MPa")
+        col1.metric("Max Pressure", f"{pressure_arr.max():.1f} MPa")
+        col2.metric("Avg Pressure", f"{pressure_arr.mean():.1f} MPa")
+        col3.metric("Min Pressure", f"{pressure_arr.min():.1f} MPa")
 
         p_norm   = (pressure_arr - pressure_arr.min()) / (
             pressure_arr.max() - pressure_arr.min() + 1e-6
         )
-        p_height = st.slider("뷰어 높이", 400, 900, 600, 50, key="p1_h")
+        p_height = st.slider("Viewer height", 400, 900, 600, 50, key="p1_h")
         html_p   = build_webgl_pressure_viewer(
             coords_arr, p_norm, max_points=10000, mode="pressure"
         )
         components.html(html_p, height=p_height, scrolling=False)
 
         import plotly.express as px
-        st.subheader("압력 분포 히스토그램")
+        st.subheader("Pressure Distribution Histogram")
         fig = px.histogram(
             x=pressure_arr, nbins=30,
-            labels={"x": "압력 (MPa)", "y": "복셀 수"},
+            labels={"x": "Pressure (MPa)", "y": "Voxel count"},
             color_discrete_sequence=["#4488ff"]
         )
         fig.update_layout(paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
                           font_color="#8ecfff")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("압력 데이터 없음. 시뮬레이션을 재실행하세요 (Day 1 solver 필요).")
+        st.warning("No pressure data. Re-run the simulation (Day 1 solver required).")
 
-    # ── 웰드라인 섹션 ──
+    # ── Weld line section ──
     st.divider()
-    st.subheader("🟡 웰드라인")
-    st.caption("서로 반대 방향 유동이 만나는 지점 — 강도 취약 위험 구간")
+    st.subheader("🟡 Weld Line")
+    st.caption("Where opposing flow fronts meet — structurally weak zone")
 
     if vdata is not None and "weld" in vdata:
         weld_arr  = vdata["weld"].astype(bool)
@@ -2235,8 +2235,8 @@ with tab_phase1:
         weld_pct  = weld_cnt / max(total_cnt, 1) * 100
 
         col1, col2 = st.columns(2)
-        col1.metric("웰드라인 복셀 수", f"{weld_cnt:,}")
-        col2.metric("전체 대비 비율",   f"{weld_pct:.2f}%")
+        col1.metric("Weld line voxels", f"{weld_cnt:,}")
+        col2.metric("Share of total",   f"{weld_pct:.2f}%")
 
         if weld_cnt > 0:
             weld_coords = coords_arr[weld_arr]
@@ -2247,13 +2247,13 @@ with tab_phase1:
                 x=non_weld[:, 0], y=non_weld[:, 1], z=non_weld[:, 2],
                 mode='markers',
                 marker=dict(size=1.5, color='#1a4a7a', opacity=0.3),
-                name='일반 복셀'
+                name='Normal voxels'
             ))
             fig.add_trace(go.Scatter3d(
                 x=weld_coords[:, 0], y=weld_coords[:, 1], z=weld_coords[:, 2],
                 mode='markers',
                 marker=dict(size=3.5, color='#ffdd00', opacity=0.9),
-                name='웰드라인'
+                name='Weld line'
             ))
             fig.update_layout(
                 scene=dict(bgcolor='#07101f'),
@@ -2262,37 +2262,37 @@ with tab_phase1:
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.success("✅ 웰드라인 없음 (양호)")
+            st.success("✅ No weld lines detected (good)")
     else:
-        st.warning("웰드라인 데이터 없음. Day 2 solver로 시뮬레이션을 재실행하세요.")
+        st.warning("No weld line data. Re-run with the Day 2 solver.")
 
-    # ── 에어트랩 섹션 (Day 3) — build_webgl_pressure_viewer() 재사용 ──
+    # ── Air trap section (Day 3) — reuse build_webgl_pressure_viewer() ──
     st.divider()
-    st.subheader("🔵 에어트랩 + 벤트 추천")
-    st.caption("충전 말기에 공기가 갇히는 위험 구간 — 표면 근처 + 충전 늦은 복셀")
+    st.subheader("🔵 Air Trap + Vent Recommendation")
+    st.caption("Air pockets trapped near end of fill — near-surface + late-fill voxels")
 
     if vdata is not None and "airtrap" in vdata:
         at_arr = vdata["airtrap"].astype(bool)
         at_cnt = int(at_arr.sum())
 
         col1, col2 = st.columns(2)
-        col1.metric("에어트랩 복셀", f"{at_cnt:,}")
-        col2.metric("위험도", "⚠️ 높음" if at_cnt > 50 else "✅ 낮음")
+        col1.metric("Air trap voxels", f"{at_cnt:,}")
+        col2.metric("Risk", "⚠️ High" if at_cnt > 50 else "✅ Low")
 
-        # 벤트 추천 위치 (results.json에서)
+        # recommended vent positions (from results.json)
         last_result = st.session_state.get("last_result", {})
         vent_pos    = last_result.get("results", {}).get("vent_positions", [])
 
         if vent_pos:
-            st.markdown("**📍 추천 벤트 위치:**")
+            st.markdown("**📍 Recommended Vent Positions:**")
             for i, v in enumerate(vent_pos):
                 st.markdown(
-                    f"- 벤트 {i+1}: X={v[0]:.2f} mm, Y={v[1]:.2f} mm, Z={v[2]:.2f} mm"
+                    f"- Vent {i+1}: X={v[0]:.2f} mm, Y={v[1]:.2f} mm, Z={v[2]:.2f} mm"
                 )
 
         if at_cnt > 0:
-            # build_webgl_pressure_viewer() 재사용 — mode="airtrap"
-            # pressure_norm 자리에 복셀 타입: 표면복셀=0.0, 에어트랩=1.0
+            # reuse build_webgl_pressure_viewer() — mode="airtrap"
+            # voxel type in pressure_norm slot: surface=0.0, air trap=1.0
             at_coords = coords_arr[at_arr]
             non_at    = coords_arr[~at_arr]
 
@@ -2307,38 +2307,38 @@ with tab_phase1:
 
             at_combined_coords = np.vstack([non_at, at_coords])
             at_combined_types  = np.concatenate([
-                np.zeros(len(non_at),    dtype=np.float32),   # 표면복셀 = 0.0
-                np.ones( len(at_coords), dtype=np.float32),   # 에어트랩 = 1.0
+                np.zeros(len(non_at),    dtype=np.float32),   # surface voxel = 0.0
+                np.ones( len(at_coords), dtype=np.float32),   # air trap = 1.0
             ])
             vent_arr = np.array(vent_pos, dtype=np.float32) if vent_pos else None
 
-            at_height = st.slider("뷰어 높이", 400, 900, 550, 50, key="at_h")
+            at_height = st.slider("Viewer height", 400, 900, 550, 50, key="at_h")
             html_at = build_webgl_pressure_viewer(
                 at_combined_coords,
                 at_combined_types,
-                max_points=len(at_combined_coords),  # 이미 샘플링 완료
+                max_points=len(at_combined_coords),  # already sampled above
                 mode="airtrap",
                 vent_coords=vent_arr,
             )
             components.html(html_at, height=at_height, scrolling=False)
         else:
-            st.success("✅ 에어트랩 없음 (양호)")
+            st.success("✅ No air traps detected (good)")
     else:
-        st.warning("에어트랩 데이터 없음. Day 3 solver로 시뮬레이션을 재실행하세요.")
+        st.warning("No air trap data. Re-run with the Day 3 solver.")
 
 # ═══════════════════════════════════════════════════════════
 # TAB PHASE 2: 온도·냉각 (Day 4~5에 구현)
 # ═══════════════════════════════════════════════════════════
 with tab_phase2:
-    st.header("🌡 온도 분포 / 냉각 해석")
-    st.info("Day 4~5 작업 후 활성화됩니다.")
+    st.header("🌡 Temperature Distribution / Cooling Analysis")
+    st.info("Will be activated after Day 4~5 work.")
 
 # ═══════════════════════════════════════════════════════════
 # TAB PHASE 3: 수축·변형 (Day 6~7에 구현)
 # ═══════════════════════════════════════════════════════════
 with tab_phase3:
-    st.header("📐 수축률 / 변형 예측")
-    st.info("Day 6~7 작업 후 활성화됩니다.")
+    st.header("📐 Shrinkage / Deformation Prediction")
+    st.info("Will be activated after Day 6~7 work.")
 
 # ── Footer ──
 st.divider()
