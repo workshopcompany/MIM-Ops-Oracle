@@ -6,6 +6,18 @@ import trimesh
 import time
 from collections import deque
 
+# ── Day 4: materials_db import ────────────────────────────────
+# solver runs from solver/ dir; materials_db.py lives in ../app/
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app'))
+try:
+    from materials_db import get_material as _get_mat
+    HAS_MATDB = True
+    print("[Solver] materials_db loaded successfully")
+except ImportError:
+    HAS_MATDB = False
+    print("[Solver] materials_db not found — using built-in defaults")
+
 # ── matplotlib (headless environment support) ───────────────────
 import matplotlib
 matplotlib.use("Agg")
@@ -343,6 +355,64 @@ def recommend_vents(
         ])
         vents.append(at_coords[np.argmax(dists)])
     return [v.tolist() for v in vents]
+
+
+# ════════════════════════════════════════════════════
+# Day 4: Temperature Distribution + Cooling Time
+# ════════════════════════════════════════════════════
+
+def calc_temperature(
+    norm_weights: np.ndarray,
+    material_name: str,
+    T_inject_C: float | None = None,
+) -> np.ndarray:
+    """
+    Fill-order-based temperature distribution estimate.
+    Gate (weight=0) = T_inject (hottest), flow front (weight=1) = Tmold (coolest).
+    Linear interpolation — first-order approximation of heat transfer.
+    """
+    if HAS_MATDB:
+        mat = _get_mat(material_name)
+    else:
+        mat = {"Tmelt_C": 1400.0, "Tmold_C": 50.0, "T_eject_C": 120.0,
+               "Cp_J_kgK": 480.0, "k_W_mK": 18.0}
+
+    T_high = T_inject_C if T_inject_C is not None else mat["Tmelt_C"]
+    T_low  = mat["Tmold_C"]
+
+    temp_map = T_high - (T_high - T_low) * norm_weights
+    return temp_map.astype(np.float32)
+
+
+def calc_cooling_time(
+    material_name: str,
+    T_inject_C: float,
+    thickness_mm: float,
+) -> float:
+    """
+    Cooling time estimate based on Throne equation (injection molding approximation).
+    tc = (h^2) / (pi^2 * alpha) * ln(4/pi * (T_inj - T_mold) / (T_eject - T_mold))
+    alpha = k / (rho * Cp)  — thermal diffusivity (mm^2/s)
+    """
+    import math
+    if HAS_MATDB:
+        mat = _get_mat(material_name)
+    else:
+        mat = {"Tmelt_C": 1400.0, "Tmold_C": 50.0, "T_eject_C": 120.0,
+               "Cp_J_kgK": 480.0, "k_W_mK": 18.0, "rho_kg_m3": 7800.0}
+
+    alpha = mat["k_W_mK"] / (mat["rho_kg_m3"] * mat["Cp_J_kgK"]) * 1e6  # mm^2/s
+    T_m   = mat["Tmold_C"]
+    T_e   = mat["T_eject_C"]
+    denom = T_e - T_m
+    if denom <= 0:
+        return 0.0
+    numer = T_inject_C - T_m
+    if numer <= 0 or numer <= denom:
+        return 0.0
+    h  = thickness_mm
+    tc = (h ** 2) / (np.pi ** 2 * alpha) * math.log((4.0 / np.pi) * (numer / denom))
+    return round(max(tc, 0.0), 2)
 
 
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
@@ -721,6 +791,31 @@ def main():
     vent_positions = recommend_vents(all_coords, airtrap_flags, top_n=5)
     print(f"[Solver] Airtrap voxels: {int(airtrap_flags.sum()):,} | Vents: {len(vent_positions)}", flush=True)
 
+    # Day 4: Temperature distribution + cooling time
+    print("[Solver] Calculating temperature distribution...", flush=True)
+    temp_map = calc_temperature(norm_weights, args.material, T_inject_C=args.temp)
+    print(f"[Solver] Temp range: {temp_map.min():.1f} ~ {temp_map.max():.1f} °C", flush=True)
+
+    # Average wall thickness estimate (volume / surface area approximation)
+    vol_mm3_val = total_voxels * (res ** 3)
+    try:
+        from scipy.spatial import cKDTree as _cKDTreeThick
+        _tree_thick  = _cKDTreeThick(all_coords)
+        _pairs_thick = _tree_thick.query_pairs(r=res * 1.85)
+        _cnt_thick   = np.zeros(len(all_coords), dtype=int)
+        for _pi, _pj in _pairs_thick:
+            _cnt_thick[_pi] += 1
+            _cnt_thick[_pj] += 1
+        surf_voxels_thick = int((_cnt_thick < 26).sum())
+        avg_thick_mm = max(vol_mm3_val / (surf_voxels_thick * res ** 2 + 1e-6), res)
+        del _tree_thick, _pairs_thick, _cnt_thick
+    except Exception:
+        avg_thick_mm = 3.0  # fallback default
+    print(f"[Solver] Avg wall thickness estimate: {avg_thick_mm:.2f} mm", flush=True)
+
+    cooling_time = calc_cooling_time(args.material, args.temp, avg_thick_mm)
+    print(f"[Solver] Estimated cooling time: {cooling_time} s", flush=True)
+
     # Surface voxel detection (for visualization — displays part shape in UI background)
     print("[Solver] Computing surface mask for visualization...", flush=True)
     from scipy.spatial import cKDTree as _cKDTree
@@ -737,6 +832,17 @@ def main():
     results["airtrap_count"]  = int(airtrap_flags.sum())
     results["vent_positions"] = vent_positions
 
+    # Append Day 4 results to results dict
+    results["T_inject_C"]    = float(args.temp)
+    results["cooling_time_s"] = cooling_time
+    if HAS_MATDB:
+        mat_props = _get_mat(args.material)
+        results["T_eject_C"] = mat_props["T_eject_C"]
+        results["Tmold_C"]   = mat_props["Tmold_C"]
+    else:
+        results["T_eject_C"] = 120.0
+        results["Tmold_C"]   = 50.0
+
     results_json_path = os.path.join(result_dir, "results.json")
     with open(results_json_path, "w") as fh:
         json.dump(results, fh, indent=4)
@@ -750,8 +856,9 @@ def main():
         display_weights=display_weights.astype(np.float32),  # ★ retained
         pressure=pressure_map,                                # ★ Day 1 retained
         weld=weld_flags.astype(np.uint8),                    # ★ Day 2 retained
-        airtrap=airtrap_flags.astype(np.uint8),              # ★ Day 3 NEW
-        surface=surface_mask,                                 # ★ Day 3 NEW (for visualization)
+        airtrap=airtrap_flags.astype(np.uint8),              # ★ Day 3 retained
+        surface=surface_mask,                                 # ★ Day 3 retained
+        temp=temp_map,                                        # ★ Day 4 NEW
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
