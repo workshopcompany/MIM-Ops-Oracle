@@ -2648,14 +2648,33 @@ with tab_phase3:
         shrink_arr = vdata["shrinkage"]
         coords_arr = vdata["coords"]
 
+        # ── Deformation vectors (Day 7) ───────────────────────────────
+        deform_arr = vdata.get("deform_vectors", None)
+        if deform_arr is not None and deform_arr.ndim == 2:
+            deform_mag = np.linalg.norm(deform_arr, axis=1)
+        else:
+            deform_mag = np.zeros(len(shrink_arr), dtype=np.float32)
+
         # ── Summary metrics ───────────────────────────────────────────
         sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.metric("Max shrinkage",  f"{shrink_arr.max()*100:.4f}%")
-        sc2.metric("Mean shrinkage", f"{shrink_arr.mean()*100:.4f}%")
-        sc3.metric("Min shrinkage",  f"{shrink_arr.min()*100:.4f}%")
+        sc1.metric("Max shrinkage",   f"{shrink_arr.max()*100:.4f}%")
+        sc2.metric("Mean shrinkage",  f"{shrink_arr.mean()*100:.4f}%")
+        sc3.metric("Max deformation", f"{deform_mag.max()*1000:.3f} μm")
         sint_pct = res_data.get("sintering_shrinkage_pct", "~14.5")
         sc4.metric("Sintering shrinkage (ref)", f"{sint_pct}%",
                    help="Separate sintering step shrinkage from materials_db — not included above.")
+
+        # ── Max deformation location warning ─────────────────────────
+        if deform_mag.max() > 0:
+            max_def_idx  = int(np.argmax(deform_mag))
+            mx, my, mz   = coords_arr[max_def_idx]
+            dvx, dvy, dvz = deform_arr[max_def_idx]
+            st.warning(
+                f"⚠️ **Maximum deformation** — {deform_mag[max_def_idx]*1000:.3f} μm "
+                f"at X={mx:.2f} mm  Y={my:.2f} mm  Z={mz:.2f} mm. "
+                f"Direction vector: ({dvx:+.4f}, {dvy:+.4f}, {dvz:+.4f}) mm. "
+                "Consider adjusting gate position or pack pressure to reduce local gradient."
+            )
 
         st.divider()
 
@@ -2669,6 +2688,88 @@ with tab_phase3:
             coords_arr, s_norm, max_points=10000, mode="pressure"
         )
         components.html(html_s, height=s_height, scrolling=False)
+
+        st.divider()
+
+        # ── Deformation magnitude 3D viewer ──────────────────────────
+        st.subheader("Deformation Magnitude — 3D Viewer  (Day 7)")
+        st.caption("Blue (small displacement) → Red (large displacement / high shrinkage gradient)")
+
+        if deform_mag.max() > 0:
+            d_norm = (deform_mag - deform_mag.min()) / (deform_mag.max() - deform_mag.min() + 1e-6)
+            d_height = st.slider("Viewer height", 400, 900, 600, 50, key="d_h")
+            html_d = build_webgl_pressure_viewer(
+                coords_arr, d_norm, max_points=10000, mode="pressure"
+            )
+            components.html(html_d, height=d_height, scrolling=False)
+        else:
+            st.info("Deformation data not available — re-run simulation with Day 7 solver.")
+
+        st.divider()
+
+        # ── Deformation magnitude histogram ──────────────────────────
+        if deform_mag.max() > 0:
+            st.subheader("Deformation Magnitude Histogram")
+            fig_dm = px.histogram(
+                x=deform_mag * 1000, nbins=40,
+                labels={"x": "Deformation magnitude (μm)", "y": "Voxel count"},
+                color_discrete_sequence=["#44ffaa"],
+            )
+            fig_dm.update_layout(
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+            )
+            st.plotly_chart(fig_dm, use_container_width=True)
+
+        st.divider()
+
+        # ── Deformation quiver (XY plane projection) ──────────────────
+        if deform_arr is not None and deform_arr.ndim == 2 and deform_mag.max() > 0:
+            st.subheader("Deformation Quiver — XY Projection  (Day 7)")
+            st.caption("Arrows show displacement direction and relative magnitude (sampled)")
+
+            sample_n = min(600, len(coords_arr))
+            idx_q    = np.linspace(0, len(coords_arr) - 1, sample_n, dtype=int)
+
+            cx = coords_arr[idx_q, 0]
+            cy = coords_arr[idx_q, 1]
+            ux = deform_arr[idx_q, 0]
+            uy = deform_arr[idx_q, 1]
+            mag_q = deform_mag[idx_q]
+
+            fig_q = go.Figure()
+            # Draw arrows as annotation-free scatter + line segments
+            arrow_x, arrow_y = [], []
+            for xi, yi, uxi, uyi in zip(cx, cy, ux, uy):
+                arrow_x += [xi, xi + uxi * 500, None]
+                arrow_y += [yi, yi + uyi * 500, None]
+
+            fig_q.add_trace(go.Scatter(
+                x=arrow_x, y=arrow_y,
+                mode="lines",
+                line=dict(color="#44ffaa", width=1),
+                name="Displacement",
+                opacity=0.6,
+            ))
+            fig_q.add_trace(go.Scatter(
+                x=cx, y=cy,
+                mode="markers",
+                marker=dict(
+                    size=4,
+                    color=mag_q * 1000,
+                    colorscale="YlOrRd",
+                    showscale=True,
+                    colorbar=dict(title="Deform (μm)", tickfont=dict(color="#8ecfff")),
+                ),
+                name="Voxels",
+            ))
+            fig_q.update_layout(
+                xaxis_title="X (mm)", yaxis_title="Y (mm)",
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                font_color="#8ecfff",
+                height=420,
+                showlegend=False,
+            )
+            st.plotly_chart(fig_q, use_container_width=True)
 
         st.divider()
 
@@ -2712,8 +2813,7 @@ with tab_phase3:
                 xaxis_title="Injection pressure (MPa)",
                 yaxis_title="Shrinkage (%)",
                 paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-                font_color="#8ecfff",
-                height=360,
+                font_color="#8ecfff", height=360,
             )
             st.plotly_chart(fig_sp, use_container_width=True)
 
@@ -2745,14 +2845,13 @@ with tab_phase3:
                 xaxis_title="Temperature (°C)",
                 yaxis_title="Shrinkage (%)",
                 paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-                font_color="#8ecfff",
-                height=360,
+                font_color="#8ecfff", height=360,
             )
             st.plotly_chart(fig_st, use_container_width=True)
 
         st.divider()
 
-        # ── Sintering shrinkage reference info ────────────────────────
+        # ── Total shrinkage reference table ───────────────────────────
         st.subheader("ℹ️ Total Shrinkage Reference (Injection + Sintering)")
         inj_mean = shrink_arr.mean() * 100
         sint_val = float(str(sint_pct).replace("%", "").strip()) if sint_pct != "~14.5" else 14.5
@@ -2783,11 +2882,11 @@ with tab_phase3:
         high_pct    = high_count / max(len(shrink_arr), 1) * 100
         if high_count > 0:
             high_coords = coords_arr[shrink_arr > high_thresh]
-            cx, cy, cz  = high_coords.mean(axis=0)
+            cx2, cy2, cz2 = high_coords.mean(axis=0)
             st.warning(
                 f"⚠️ **High-shrinkage zone** — {high_count:,} voxels ({high_pct:.1f}%) "
                 f"exceed mean + 2σ ({high_thresh*100:.4f}%). "
-                f"Centroid: X={cx:.2f} mm  Y={cy:.2f} mm  Z={cz:.2f} mm. "
+                f"Centroid: X={cx2:.2f} mm  Y={cy2:.2f} mm  Z={cz2:.2f} mm. "
                 "Consider adjusting gate position or increasing pack pressure in this region."
             )
         else:
