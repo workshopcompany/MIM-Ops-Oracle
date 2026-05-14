@@ -1404,7 +1404,7 @@ input[type=range]{{accent-color:#4df0c0;cursor:pointer}}
       </div>
       <div class="rrow">
         <span class="rlbl">Size</span>
-        <input class="rslider" type="range" min="50" max="200" value="100"
+        <input class="rslider" type="range" min="5" max="200" value="100" step="1"
                oninput="setVoxSize(this.value/100);document.getElementById('rvoxSz').textContent=this.value+'%'">
         <span class="rval" id="rvoxSz">100%</span>
       </div>
