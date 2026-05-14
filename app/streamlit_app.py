@@ -825,6 +825,7 @@ def build_webgl_pressure_viewer(
     max_points: int = 8000,
     mode: str = "pressure",   # "pressure" | "airtrap"
     vent_coords: np.ndarray = None,
+    mesh_trimesh=None,
 ) -> str:
     """
     Shared 3D static viewer for pressure distribution / air trap (Canvas 2D).
@@ -869,6 +870,32 @@ def build_webgl_pressure_viewer(
     if mode == "airtrap" and vent_coords is not None and len(vent_coords) > 0:
         vc_n = ((np.array(vent_coords, dtype=np.float32) - center) / scale * 2.0)
         vent_json = _json.dumps([[round(float(v), 3) for v in row] for row in vc_n])
+
+    # ── STL wireframe edges ─────────────────────────────────────────────
+    wire_segs_json = "[]"
+    if mesh_trimesh is not None:
+        try:
+            import numpy as _np
+            v_m   = _np.array(mesh_trimesh.vertices, dtype=_np.float32)
+            verts_n = ((v_m - center) / scale * 2.0)
+            faces_m = _np.array(mesh_trimesh.faces, dtype=_np.int32)
+            MAX_F   = 8000
+            if len(faces_m) > MAX_F:
+                idx_f = _np.random.choice(len(faces_m), MAX_F, replace=False)
+                faces_m = faces_m[idx_f]
+            edges_s = set()
+            for f in faces_m:
+                for i in range(3):
+                    edges_s.add(tuple(sorted([int(f[i]), int(f[(i+1)%3])])))
+            seg_list = []
+            for e in edges_s:
+                p0 = verts_n[e[0]]; p1 = verts_n[e[1]]
+                seg_list.append([round(float(p0[0]),4), round(float(p0[1]),4), round(float(p0[2]),4),
+                                  round(float(p1[0]),4), round(float(p1[1]),4), round(float(p1[2]),4)])
+            wire_segs_json = _json.dumps(seg_list)
+        except Exception:
+            pass
+    # ───────────────────────────────────────────────────────────────────
 
     # mode-specific HUD / legend text
     if mode == "airtrap":
@@ -971,6 +998,7 @@ canvas#c:active{{cursor:grabbing}}
 <script>
 const XYZP = {xyzp_json};
 const VENTS = {vent_json};
+const WIRE_SEGS = {wire_segs_json};
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 let W=0, H=0;
@@ -1014,6 +1042,24 @@ function draw() {{
   const grd=ctx.createLinearGradient(0,0,0,H);
   grd.addColorStop(0,'#0f172a'); grd.addColorStop(1,'#1e293b');
   ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+
+  // ── STL wireframe overlay ──
+  if (WIRE_SEGS.length > 0) {{
+    ctx.save();
+    ctx.strokeStyle = 'rgba(100,180,255,0.18)';
+    ctx.lineWidth   = 0.7;
+    for (let i=0; i<WIRE_SEGS.length; i++) {{
+      const seg = WIRE_SEGS[i];
+      const p0 = project(seg[0], seg[1], seg[2]);
+      const p1 = project(seg[3], seg[4], seg[5]);
+      if (!p0 || !p1) continue;
+      ctx.beginPath();
+      ctx.moveTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+      ctx.stroke();
+    }}
+    ctx.restore();
+  }}
 
   const pts = XYZP.map(r => {{
     const p=project(r[0],r[1],r[2]);
@@ -1112,6 +1158,23 @@ def build_webgl_flow_viewer(
             pass
 
     coords_n   = normalize(coords_s)
+
+    # ── Outlier removal: IQR per axis ───────────────────────────────────
+    # Removes stray voxels that end up far outside the main point cloud.
+    try:
+        q1 = np.percentile(coords_n, 5,  axis=0)
+        q3 = np.percentile(coords_n, 95, axis=0)
+        iqr = q3 - q1
+        lo  = q1 - 2.5 * iqr
+        hi  = q3 + 2.5 * iqr
+        inl = np.all((coords_n >= lo) & (coords_n <= hi), axis=1)
+        if inl.sum() >= 50:
+            coords_n  = coords_n[inl]
+            weights_s = weights_s[inl]
+    except Exception:
+        pass
+    # ────────────────────────────────────────────────────────────────────
+
     voxel_size_n = min(0.06, max(0.002, 2.0 / (N ** (1/3))))
 
     if gate_dia_mm is not None:
