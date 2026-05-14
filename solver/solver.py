@@ -415,6 +415,139 @@ def calc_cooling_time(
     return round(max(tc, 0.0), 2)
 
 
+# ════════════════════════════════════════════════════
+# Day 5: Local Wall Thickness Map + Per-Voxel Cooling Time Map
+# ════════════════════════════════════════════════════
+
+def calc_local_thickness(
+    coords: np.ndarray,
+    res: float,
+    sample_ratio: float = 0.20,
+) -> np.ndarray:
+    """
+    Estimate local wall thickness at each voxel using a medial-axis approximation.
+
+    Algorithm:
+      1. Identify surface voxels (neighbor count < 26 in 3x3x3 neighbourhood).
+      2. For each voxel find the nearest surface voxel — local half-thickness = distance.
+      3. Local thickness = 2 * distance_to_nearest_surface.
+      Surface voxels themselves get thickness clamped to at least one voxel size (res).
+
+    Large meshes (> 80k voxels) use random sampling + nearest-neighbour
+    interpolation to keep runtime manageable.
+
+    Returns:
+        thickness_map  (N,) float32  — local wall thickness in mm per voxel.
+    """
+    from scipy.spatial import cKDTree
+
+    total = len(coords)
+    print(f"[Solver] Day5: computing local thickness ({total:,} voxels)...", flush=True)
+
+    # ── 1. Build neighbour graph to identify surface voxels ──────────
+    tree  = cKDTree(coords)
+    pairs = tree.query_pairs(r=res * 1.85, output_type="ndarray")
+
+    if len(pairs) == 0:
+        return np.full(total, res, dtype=np.float32)
+
+    cnt = (np.bincount(pairs[:, 0], minlength=total)
+           + np.bincount(pairs[:, 1], minlength=total))
+    surface_mask = cnt < 26
+    surface_idx  = np.where(surface_mask)[0]
+    del pairs, cnt
+
+    if len(surface_idx) == 0:
+        return np.full(total, res * 2.0, dtype=np.float32)
+
+    surface_coords = coords[surface_idx]
+    surf_tree      = cKDTree(surface_coords)
+
+    # ── 2. Query nearest surface distance ────────────────────────────
+    LARGE_THRESH = 80_000
+    if total <= LARGE_THRESH:
+        dists, _ = surf_tree.query(coords, k=1, workers=-1)
+        thickness_map = (dists * 2.0).astype(np.float32)
+    else:
+        # Sample a fraction, then NN-interpolate the rest
+        n_sample   = max(int(total * sample_ratio), 5000)
+        sample_idx = np.random.choice(total, size=n_sample, replace=False)
+        sample_pts = coords[sample_idx]
+
+        dists_s, _ = surf_tree.query(sample_pts, k=1, workers=-1)
+        thick_s    = (dists_s * 2.0).astype(np.float32)
+
+        sample_tree = cKDTree(sample_pts)
+        thickness_map = np.zeros(total, dtype=np.float32)
+        thickness_map[sample_idx] = thick_s
+
+        non_sample_idx = np.setdiff1d(np.arange(total), sample_idx)
+        if len(non_sample_idx) > 0:
+            _, nn_idx = sample_tree.query(coords[non_sample_idx], k=1, workers=-1)
+            thickness_map[non_sample_idx] = thick_s[nn_idx]
+
+    # Clamp surface voxels and overall minimum to res
+    thickness_map[surface_mask] = np.maximum(thickness_map[surface_mask], np.float32(res))
+    thickness_map = np.maximum(thickness_map, np.float32(res))
+
+    print(
+        f"[Solver] Day5: thickness — "
+        f"min={thickness_map.min():.2f}  mean={thickness_map.mean():.2f}  "
+        f"max={thickness_map.max():.2f} mm",
+        flush=True,
+    )
+    return thickness_map
+
+
+def calc_cooling_time_map(
+    thickness_map: np.ndarray,
+    material_name: str,
+    T_inject_C: float,
+) -> np.ndarray:
+    """
+    Per-voxel cooling time using the Throne equation applied to the local thickness map.
+
+        tc_i = (h_i^2) / (pi^2 * alpha) * ln(4/pi * (T_inj - T_mold) / (T_eject - T_mold))
+
+    Returns:
+        cooling_time_map  (N,) float32  — per-voxel cooling time in seconds.
+    """
+    import math
+
+    if HAS_MATDB:
+        mat = _get_mat(material_name)
+    else:
+        mat = {"Tmelt_C": 1400.0, "Tmold_C": 50.0, "T_eject_C": 120.0,
+               "Cp_J_kgK": 480.0, "k_W_mK": 18.0, "rho_kg_m3": 7800.0}
+
+    # Thermal diffusivity in mm^2/s
+    alpha = mat["k_W_mK"] / (mat["rho_kg_m3"] * mat["Cp_J_kgK"]) * 1e6
+    T_m   = mat["Tmold_C"]
+    T_e   = mat["T_eject_C"]
+    denom = T_e - T_m
+    numer = T_inject_C - T_m
+
+    if denom <= 0 or numer <= denom:
+        print("[Solver] Day5: degenerate temps — cooling time map set to zeros", flush=True)
+        return np.zeros(len(thickness_map), dtype=np.float32)
+
+    log_arg = (4.0 / math.pi) * (numer / denom)
+    if log_arg <= 1.0:
+        return np.zeros(len(thickness_map), dtype=np.float32)
+
+    log_term = math.log(log_arg)
+    coeff    = log_term / (math.pi ** 2 * alpha)       # scalar
+    ct_map   = (thickness_map.astype(np.float64) ** 2) * coeff
+    ct_map   = np.maximum(ct_map, 0.0).astype(np.float32)
+
+    print(
+        f"[Solver] Day5: cooling time map — "
+        f"min={ct_map.min():.3f}  mean={ct_map.mean():.3f}  max={ct_map.max():.3f} s",
+        flush=True,
+    )
+    return ct_map
+
+
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
     """
@@ -816,6 +949,12 @@ def main():
     cooling_time = calc_cooling_time(args.material, args.temp, avg_thick_mm)
     print(f"[Solver] Estimated cooling time: {cooling_time} s", flush=True)
 
+    # ── Day 5: Local thickness map + per-voxel cooling time map ──────
+    print("[Solver] Day5: computing local thickness and cooling time map...", flush=True)
+    thickness_map    = calc_local_thickness(all_coords, res)
+    cooling_time_map = calc_cooling_time_map(thickness_map, args.material, args.temp)
+    print("PROGRESS:92", flush=True)
+
     # Surface voxel detection (for visualization — displays part shape in UI background)
     print("[Solver] Computing surface mask for visualization...", flush=True)
     from scipy.spatial import cKDTree as _cKDTree
@@ -843,6 +982,16 @@ def main():
         results["T_eject_C"] = 120.0
         results["Tmold_C"]   = 50.0
 
+    # Append Day 5 results to results dict
+    results["avg_thickness_mm"]  = round(float(thickness_map.mean()), 3)
+    results["max_thickness_mm"]  = round(float(thickness_map.max()),  3)
+    results["min_thickness_mm"]  = round(float(thickness_map.min()),  3)
+    results["max_cooling_time_s"] = round(float(cooling_time_map.max()), 3)
+    results["mean_cooling_time_s"] = round(float(cooling_time_map.mean()), 3)
+    # Identify the hotspot: voxel coordinate with max cooling time
+    hotspot_idx = int(np.argmax(cooling_time_map))
+    results["cooling_hotspot_mm"] = [round(float(v), 3) for v in all_coords[hotspot_idx]]
+
     results_json_path = os.path.join(result_dir, "results.json")
     with open(results_json_path, "w") as fh:
         json.dump(results, fh, indent=4)
@@ -858,7 +1007,9 @@ def main():
         weld=weld_flags.astype(np.uint8),                    # ★ Day 2 retained
         airtrap=airtrap_flags.astype(np.uint8),              # ★ Day 3 retained
         surface=surface_mask,                                 # ★ Day 3 retained
-        temp=temp_map,                                        # ★ Day 4 NEW
+        temp=temp_map,                                        # ★ Day 4 retained
+        thickness=thickness_map,                              # ★ Day 5 NEW
+        cooling_time_map=cooling_time_map,                    # ★ Day 5 NEW
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
