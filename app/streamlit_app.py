@@ -924,7 +924,7 @@ function pointColor(p) {
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{width:100%;height:100%;background:#07101f;
            font-family:'Courier New',monospace;color:#8ecfff;overflow:hidden}}
-#wrap{{position:relative;width:100%;height:100%}}
+#wrap{{position:relative;width:100%;height:calc(100% - 38px)}}
 canvas#c{{position:absolute;top:0;left:0;width:100%;height:100%;
           display:block;cursor:grab}}
 canvas#c:active{{cursor:grabbing}}
@@ -932,15 +932,41 @@ canvas#c:active{{cursor:grabbing}}
       background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
       border-radius:6px;padding:6px 12px;line-height:1.8;
       pointer-events:none;z-index:10}}
-#legend{{position:absolute;bottom:40px;right:12px;font-size:10px;
+#legend{{position:absolute;bottom:10px;right:12px;font-size:10px;
          background:rgba(0,10,30,.75);border:1px solid #1a3a5c;
          border-radius:6px;padding:6px 10px;z-index:10}}
 #legend canvas{{width:120px;height:12px;display:block;margin-bottom:3px}}
+#ctrlbar{{
+  height:38px;width:100%;background:#0d1a2e;border-top:1px solid #1a3a5c;
+  display:flex;align-items:center;gap:10px;padding:0 12px;
+  font-size:11px;color:#8ecfff;
+}}
+#ctrlbar label{{white-space:nowrap}}
+#sizeSlider{{
+  -webkit-appearance:none;appearance:none;
+  width:140px;height:4px;border-radius:2px;
+  background:linear-gradient(to right,#1a3a6a,#00ccff);
+  outline:none;cursor:pointer;
+}}
+#sizeSlider::-webkit-slider-thumb{{
+  -webkit-appearance:none;appearance:none;
+  width:14px;height:14px;border-radius:50%;
+  background:#00ccff;border:2px solid #07101f;cursor:pointer;
+}}
+#sizeVal{{color:#00ccff;font-weight:bold;min-width:28px}}
 </style></head><body>
 <div id="wrap">
 <canvas id="c"></canvas>
 <div id="hud">{hud_html}</div>
 {legend_html}
+</div>
+<div id="ctrlbar">
+  <label>● Point size:</label>
+  <input type="range" id="sizeSlider" min="0.3" max="5.0" step="0.1" value="1.0"
+         oninput="pointSizeMult=parseFloat(this.value);
+                  document.getElementById('sizeVal').textContent=parseFloat(this.value).toFixed(1)+'x';
+                  draw();">
+  <span id="sizeVal">1.0x</span>
 </div>
 <script>
 const XYZP = {xyzp_json};
@@ -948,6 +974,7 @@ const VENTS = {vent_json};
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 let W=0, H=0;
+let pointSizeMult = 1.0;
 
 function resize() {{
   const wrap = document.getElementById('wrap');
@@ -996,7 +1023,7 @@ function draw() {{
   pts.forEach(pt => {{
     const c = pointColor(pt.pv);
     ctx.beginPath();
-    ctx.arc(pt.sx, pt.sy, c.radius, 0, Math.PI*2);
+    ctx.arc(pt.sx, pt.sy, c.radius * pointSizeMult, 0, Math.PI*2);
     ctx.fillStyle = `rgba(${{c.r}},${{c.g}},${{c.b}},${{c.a}})`;
     ctx.fill();
   }});
