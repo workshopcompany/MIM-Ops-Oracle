@@ -548,6 +548,54 @@ def calc_cooling_time_map(
     return ct_map
 
 
+# ════════════════════════════════════════════════════
+# Day 6: Per-Voxel Injection Shrinkage Map
+# ════════════════════════════════════════════════════
+
+def calc_shrinkage(
+    temp_map: np.ndarray,
+    pressure_map: np.ndarray,
+    material_name: str,
+    T_room_C: float = 25.0,
+) -> np.ndarray:
+    """
+    Per-voxel linear shrinkage from the injection molding process.
+
+    Model:
+        shrinkage = thermal_strain - pressure_compensation
+        thermal_strain   = CTE  * (T_voxel - T_room)
+        pressure_strain  = beta * P_voxel
+
+    Note: Sintering shrinkage (~14~16%) is NOT included here.
+          It is stored separately in materials_db.sintering_shrinkage
+          and applied at the Phase 3 UI level for user reference.
+
+    Returns:
+        shrinkage_map  (N,) float32  — dimensionless linear shrinkage per voxel
+                                       (positive = shrinking)
+    """
+    if HAS_MATDB:
+        mat = _get_mat(material_name)
+    else:
+        mat = {"CTE_per_C": 12.0e-6, "compressibility_per_MPa": 4.0e-5}
+
+    CTE  = mat["CTE_per_C"]               # 1/°C
+    beta = mat["compressibility_per_MPa"]  # 1/MPa
+
+    thermal_strain  = CTE  * (temp_map    - T_room_C)   # (N,)
+    pressure_strain = beta *  pressure_map               # (N,)
+    shrinkage       = thermal_strain - pressure_strain   # (N,)
+
+    print(
+        f"[Solver] Day6: shrinkage — "
+        f"min={shrinkage.min()*100:.4f}%  "
+        f"mean={shrinkage.mean()*100:.4f}%  "
+        f"max={shrinkage.max()*100:.4f}%",
+        flush=True,
+    )
+    return shrinkage.astype(np.float32)
+
+
 def save_visual_frame(coords, display_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
     """
@@ -955,6 +1003,11 @@ def main():
     cooling_time_map = calc_cooling_time_map(thickness_map, args.material, args.temp)
     print("PROGRESS:92", flush=True)
 
+    # ── Day 6: Per-voxel injection shrinkage map ──────────────────────
+    print("[Solver] Day6: computing shrinkage map...", flush=True)
+    shrinkage_map = calc_shrinkage(temp_map, pressure_map, args.material)
+    print("PROGRESS:95", flush=True)
+
     # Surface voxel detection (for visualization — displays part shape in UI background)
     print("[Solver] Computing surface mask for visualization...", flush=True)
     from scipy.spatial import cKDTree as _cKDTree
@@ -983,14 +1036,25 @@ def main():
         results["Tmold_C"]   = 50.0
 
     # Append Day 5 results to results dict
-    results["avg_thickness_mm"]  = round(float(thickness_map.mean()), 3)
-    results["max_thickness_mm"]  = round(float(thickness_map.max()),  3)
-    results["min_thickness_mm"]  = round(float(thickness_map.min()),  3)
+    results["avg_thickness_mm"]   = round(float(thickness_map.mean()), 3)
+    results["max_thickness_mm"]   = round(float(thickness_map.max()),  3)
+    results["min_thickness_mm"]   = round(float(thickness_map.min()),  3)
     results["max_cooling_time_s"] = round(float(cooling_time_map.max()), 3)
     results["mean_cooling_time_s"] = round(float(cooling_time_map.mean()), 3)
     # Identify the hotspot: voxel coordinate with max cooling time
     hotspot_idx = int(np.argmax(cooling_time_map))
     results["cooling_hotspot_mm"] = [round(float(v), 3) for v in all_coords[hotspot_idx]]
+
+    # Append Day 6 results to results dict
+    results["max_shrinkage_pct"]  = round(float(shrinkage_map.max()  * 100), 4)
+    results["mean_shrinkage_pct"] = round(float(shrinkage_map.mean() * 100), 4)
+    results["min_shrinkage_pct"]  = round(float(shrinkage_map.min()  * 100), 4)
+    # Sintering shrinkage reference (from materials_db)
+    if HAS_MATDB:
+        _mat6 = _get_mat(args.material)
+        results["sintering_shrinkage_pct"] = round(_mat6.get("sintering_shrinkage", 0.145) * 100, 1)
+    else:
+        results["sintering_shrinkage_pct"] = 14.5
 
     results_json_path = os.path.join(result_dir, "results.json")
     with open(results_json_path, "w") as fh:
@@ -1008,8 +1072,9 @@ def main():
         airtrap=airtrap_flags.astype(np.uint8),              # ★ Day 3 retained
         surface=surface_mask,                                 # ★ Day 3 retained
         temp=temp_map,                                        # ★ Day 4 retained
-        thickness=thickness_map,                              # ★ Day 5 NEW
-        cooling_time_map=cooling_time_map,                    # ★ Day 5 NEW
+        thickness=thickness_map,                              # ★ Day 5 retained
+        cooling_time_map=cooling_time_map,                    # ★ Day 5 retained
+        shrinkage=shrinkage_map,                              # ★ Day 6 NEW
     )
     print(f"[Solver] ✅ voxel_data.npz: {npz_path} ({total_voxels} voxels)", flush=True)
 
