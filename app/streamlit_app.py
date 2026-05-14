@@ -862,6 +862,22 @@ def build_webgl_pressure_viewer(
     center   = (c_min + c_max) / 2.0
     coords_n = ((coords_s - center) / scale * 2.0).astype(np.float32)
 
+    # ── Outlier removal: IQR per axis ───────────────────────────────────
+    # Removes stray voxels that end up far outside the main point cloud.
+    try:
+        q1 = np.percentile(coords_n, 5,  axis=0)
+        q3 = np.percentile(coords_n, 95, axis=0)
+        iqr = q3 - q1
+        lo  = q1 - 2.5 * iqr
+        hi  = q3 + 2.5 * iqr
+        inl = np.all((coords_n >= lo) & (coords_n <= hi), axis=1)
+        if inl.sum() >= 50:
+            coords_n  = coords_n[inl]
+            p_norm_s  = p_norm_s[inl]
+    except Exception:
+        pass
+    # ────────────────────────────────────────────────────────────────────
+
     xyzp      = np.column_stack([coords_n, p_norm_s])
     xyzp_json = _json.dumps([[round(float(v), 3) for v in row] for row in xyzp])
 
@@ -2296,7 +2312,8 @@ with tab_phase1:
             )
             p_height = st.slider("Viewer height", 400, 900, 600, 50, key="p1_h")
             html_p   = build_webgl_pressure_viewer(
-                coords_arr, p_norm, max_points=10000, mode="pressure"
+                coords_arr, p_norm, max_points=10000, mode="pressure",
+                mesh_trimesh=st.session_state.get("mesh", None),
             )
             components.html(html_p, height=p_height, scrolling=False)
 
@@ -2409,6 +2426,7 @@ with tab_phase1:
                     max_points=len(at_combined_coords),  # already sampled above
                     mode="airtrap",
                     vent_coords=vent_arr,
+                    mesh_trimesh=st.session_state.get("mesh", None),
                 )
                 components.html(html_at, height=at_height, scrolling=False)
             else:
@@ -2461,7 +2479,8 @@ with tab_phase2:
 
             t_height = st.slider("Viewer height (px)", 400, 900, 600, 50, key="t_h")
             html_t   = build_webgl_pressure_viewer(
-                coords_arr, t_norm, max_points=10000, mode="pressure"
+                coords_arr, t_norm, max_points=10000, mode="pressure",
+                mesh_trimesh=st.session_state.get("mesh", None),
             )
             components.html(html_t, height=t_height, scrolling=False)
 
@@ -2606,7 +2625,8 @@ with tab_phase2:
             th_norm = (thick_arr - thick_arr.min()) / (thick_arr.max() - thick_arr.min() + 1e-6)
             th_height = st.slider("Viewer height", 400, 900, 550, 50, key="th_h")
             html_th = build_webgl_pressure_viewer(
-                coords_arr, th_norm, max_points=10000, mode="pressure"
+                coords_arr, th_norm, max_points=10000, mode="pressure",
+                mesh_trimesh=st.session_state.get("mesh", None),
             )
             components.html(html_th, height=th_height, scrolling=False)
 
@@ -2653,7 +2673,8 @@ with tab_phase2:
             ct_norm = (ct_map_arr - ct_map_arr.min()) / (ct_map_arr.max() - ct_map_arr.min() + 1e-6)
             ct_height = st.slider("Viewer height", 400, 900, 550, 50, key="ct_h")
             html_ct = build_webgl_pressure_viewer(
-                coords_arr, ct_norm, max_points=10000, mode="pressure"
+                coords_arr, ct_norm, max_points=10000, mode="pressure",
+                mesh_trimesh=st.session_state.get("mesh", None),
             )
             components.html(html_ct, height=ct_height, scrolling=False)
 
@@ -2775,7 +2796,8 @@ with tab_phase3:
             s_norm = (shrink_arr - shrink_arr.min()) / (shrink_arr.max() - shrink_arr.min() + 1e-6)
             s_height = st.slider("Viewer height", 400, 900, 600, 50, key="s_h")
             html_s = build_webgl_pressure_viewer(
-                coords_arr, s_norm, max_points=10000, mode="pressure"
+                coords_arr, s_norm, max_points=10000, mode="pressure",
+                mesh_trimesh=st.session_state.get("mesh", None),
             )
             components.html(html_s, height=s_height, scrolling=False)
 
@@ -2789,7 +2811,8 @@ with tab_phase3:
                 d_norm = (deform_mag - deform_mag.min()) / (deform_mag.max() - deform_mag.min() + 1e-6)
                 d_height = st.slider("Viewer height", 400, 900, 600, 50, key="d_h")
                 html_d = build_webgl_pressure_viewer(
-                    coords_arr, d_norm, max_points=10000, mode="pressure"
+                    coords_arr, d_norm, max_points=10000, mode="pressure",
+                    mesh_trimesh=st.session_state.get("mesh", None),
                 )
                 components.html(html_d, height=d_height, scrolling=False)
             else:
