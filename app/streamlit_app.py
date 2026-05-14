@@ -904,6 +904,21 @@ def build_webgl_pressure_viewer(
 
     coords_n = ((coords_s - center) / scale * 2.0).astype(np.float32)
 
+    # ── 고립 voxel 제거: KDTree 이웃 밀도 필터 ──────────────────────────
+    try:
+        from scipy.spatial import KDTree as _KDTree
+        _tree   = _KDTree(coords_n)
+        _vsize  = min(0.06, max(0.002, 2.0 / (len(coords_n) ** (1/3))))
+        _r      = _vsize * 3.5
+        _counts = np.array([len(i) for i in _tree.query_ball_point(coords_n, _r)])
+        _keep   = _counts >= 3
+        if _keep.sum() >= 50:
+            coords_n = coords_n[_keep]
+            p_norm_s = p_norm_s[_keep]
+    except Exception:
+        pass
+    # ────────────────────────────────────────────────────────────────────
+
     xyzp      = np.column_stack([coords_n, p_norm_s])
     xyzp_json = _json.dumps([[round(float(v), 3) for v in row] for row in xyzp])
 
@@ -1201,18 +1216,23 @@ def build_webgl_flow_viewer(
 
     coords_n   = normalize(coords_s)
 
-    # ── Outlier removal: IQR per axis ───────────────────────────────────
-    # Removes stray voxels that end up far outside the main point cloud.
+    # ── 고립 voxel 제거: KDTree 이웃 밀도 필터 ──────────────────────────
+    # 근본 원인: 서버 BFS voxelization에서 주변에 이웃이 없는 고립 voxel이
+    # 생성됨. contains()/IQR로는 잡히지 않음 (좌표는 형상 근처에 있기 때문).
+    # 해결: 반경 r 내 이웃이 min_neighbors개 미만인 포인트를 제거.
     try:
-        q1 = np.percentile(coords_n, 5,  axis=0)
-        q3 = np.percentile(coords_n, 95, axis=0)
-        iqr = q3 - q1
-        lo  = q1 - 2.5 * iqr
-        hi  = q3 + 2.5 * iqr
-        inl = np.all((coords_n >= lo) & (coords_n <= hi), axis=1)
-        if inl.sum() >= 50:
-            coords_n  = coords_n[inl]
-            weights_s = weights_s[inl]
+        from scipy.spatial import KDTree as _KDTree
+        _tree    = _KDTree(coords_n)
+        # voxel_size_n 기준: 이웃을 찾을 반경 = voxel 3개 거리
+        _vsize   = min(0.06, max(0.002, 2.0 / (len(coords_n) ** (1/3))))
+        _r       = _vsize * 3.5
+        # 각 포인트 반경 내 이웃 수 (자기 자신 포함)
+        _counts  = np.array([len(idxs) for idxs in _tree.query_ball_point(coords_n, _r)])
+        # 이웃이 2개 미만(자기 자신만)인 완전 고립 포인트 제거
+        _keep    = _counts >= 3
+        if _keep.sum() >= 50:
+            coords_n  = coords_n[_keep]
+            weights_s = weights_s[_keep]
     except Exception:
         pass
     # ────────────────────────────────────────────────────────────────────
