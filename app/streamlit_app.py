@@ -2618,11 +2618,184 @@ with tab_phase2:
         )
 
 # ═══════════════════════════════════════════════════════════
-# TAB PHASE 3: Shrinkage · Deformation (to be implemented Day 6~7)
+# TAB PHASE 3: Shrinkage / Deformation (Day 6~7)
 # ═══════════════════════════════════════════════════════════
 with tab_phase3:
     st.header("📐 Shrinkage / Deformation Prediction")
-    st.info("Will be activated after Day 6~7 work.")
+    st.caption("Injection-process shrinkage only — sintering shrinkage (~14~16%) shown separately as reference.")
+
+    if not st.session_state.get("job_id"):
+        st.info("Please run a simulation in the [Simulation] tab first.")
+        st.stop()
+
+    job_id    = st.session_state.job_id
+    cache_key = f"voxel_full_{job_id}"
+
+    if cache_key not in st.session_state:
+        with st.spinner("Loading analysis data..."):
+            st.session_state[cache_key] = get_voxel_data_full(job_id)
+
+    vdata = st.session_state.get(cache_key)
+
+    last_result = st.session_state.get("last_result", {})
+    res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
+    mat_name    = st.session_state.get("material", "unknown")
+
+    if vdata is not None and "shrinkage" in vdata:
+        import plotly.express as px
+        import plotly.graph_objects as go
+
+        shrink_arr = vdata["shrinkage"]
+        coords_arr = vdata["coords"]
+
+        # ── Summary metrics ───────────────────────────────────────────
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("Max shrinkage",  f"{shrink_arr.max()*100:.4f}%")
+        sc2.metric("Mean shrinkage", f"{shrink_arr.mean()*100:.4f}%")
+        sc3.metric("Min shrinkage",  f"{shrink_arr.min()*100:.4f}%")
+        sint_pct = res_data.get("sintering_shrinkage_pct", "~14.5")
+        sc4.metric("Sintering shrinkage (ref)", f"{sint_pct}%",
+                   help="Separate sintering step shrinkage from materials_db — not included above.")
+
+        st.divider()
+
+        # ── Shrinkage 3D viewer ───────────────────────────────────────
+        st.subheader("Shrinkage Distribution — 3D Viewer")
+        st.caption("Blue (low shrinkage / high-pressure gate zone) → Red (high shrinkage / low-pressure flow front)")
+
+        s_norm = (shrink_arr - shrink_arr.min()) / (shrink_arr.max() - shrink_arr.min() + 1e-6)
+        s_height = st.slider("Viewer height", 400, 900, 600, 50, key="s_h")
+        html_s = build_webgl_pressure_viewer(
+            coords_arr, s_norm, max_points=10000, mode="pressure"
+        )
+        components.html(html_s, height=s_height, scrolling=False)
+
+        st.divider()
+
+        # ── Shrinkage histogram ───────────────────────────────────────
+        st.subheader("Shrinkage Distribution Histogram")
+        fig_sh = px.histogram(
+            x=shrink_arr * 100, nbins=40,
+            labels={"x": "Shrinkage (%)", "y": "Voxel count"},
+            color_discrete_sequence=["#aa44ff"],
+        )
+        fig_sh.update_layout(
+            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+        )
+        st.plotly_chart(fig_sh, use_container_width=True)
+
+        st.divider()
+
+        # ── Shrinkage vs pressure scatter ─────────────────────────────
+        if "pressure" in vdata:
+            st.subheader("Shrinkage vs Injection Pressure")
+            st.caption("Higher pressure → more pressure compensation → less net shrinkage")
+            pressure_arr = vdata["pressure"]
+            sample_n     = min(3000, len(shrink_arr))
+            idx_sp       = np.linspace(0, len(shrink_arr) - 1, sample_n, dtype=int)
+            fig_sp = go.Figure()
+            fig_sp.add_trace(go.Scatter(
+                x=pressure_arr[idx_sp],
+                y=shrink_arr[idx_sp] * 100,
+                mode="markers",
+                marker=dict(
+                    size=3,
+                    color=shrink_arr[idx_sp] * 100,
+                    colorscale="Plasma",
+                    opacity=0.55,
+                    showscale=True,
+                    colorbar=dict(title="Shrinkage (%)", tickfont=dict(color="#8ecfff")),
+                ),
+                name="Voxels",
+            ))
+            fig_sp.update_layout(
+                xaxis_title="Injection pressure (MPa)",
+                yaxis_title="Shrinkage (%)",
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                font_color="#8ecfff",
+                height=360,
+            )
+            st.plotly_chart(fig_sp, use_container_width=True)
+
+        st.divider()
+
+        # ── Shrinkage vs temperature scatter ──────────────────────────
+        if "temp" in vdata:
+            st.subheader("Shrinkage vs Temperature")
+            st.caption("Higher temperature → larger thermal strain → more shrinkage")
+            temp_arr = vdata["temp"]
+            sample_n = min(3000, len(shrink_arr))
+            idx_st   = np.linspace(0, len(shrink_arr) - 1, sample_n, dtype=int)
+            fig_st = go.Figure()
+            fig_st.add_trace(go.Scatter(
+                x=temp_arr[idx_st],
+                y=shrink_arr[idx_st] * 100,
+                mode="markers",
+                marker=dict(
+                    size=3,
+                    color=temp_arr[idx_st],
+                    colorscale="RdYlBu_r",
+                    opacity=0.55,
+                    showscale=True,
+                    colorbar=dict(title="Temp (°C)", tickfont=dict(color="#8ecfff")),
+                ),
+                name="Voxels",
+            ))
+            fig_st.update_layout(
+                xaxis_title="Temperature (°C)",
+                yaxis_title="Shrinkage (%)",
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                font_color="#8ecfff",
+                height=360,
+            )
+            st.plotly_chart(fig_st, use_container_width=True)
+
+        st.divider()
+
+        # ── Sintering shrinkage reference info ────────────────────────
+        st.subheader("ℹ️ Total Shrinkage Reference (Injection + Sintering)")
+        inj_mean = shrink_arr.mean() * 100
+        sint_val = float(str(sint_pct).replace("%", "").strip()) if sint_pct != "~14.5" else 14.5
+        total_ref = inj_mean + sint_val
+
+        ref_data = {
+            "Item": [
+                "Injection shrinkage (mean, this simulation)",
+                f"Sintering shrinkage (ref, {mat_name})",
+                "Total estimated shrinkage (injection + sintering)",
+            ],
+            "Value": [
+                f"{inj_mean:.4f}%",
+                f"{sint_val:.1f}%",
+                f"{total_ref:.2f}%",
+            ],
+        }
+        st.table(ref_data)
+        st.caption(
+            "⚠️ Sintering shrinkage is isotropic and applied uniformly at the part level. "
+            "Injection shrinkage is spatially distributed (shown above). "
+            "These values are first-order estimates — validate against actual part measurements."
+        )
+
+        # ── High-shrinkage zone warning ───────────────────────────────
+        high_thresh = shrink_arr.mean() + 2 * shrink_arr.std()
+        high_count  = int((shrink_arr > high_thresh).sum())
+        high_pct    = high_count / max(len(shrink_arr), 1) * 100
+        if high_count > 0:
+            high_coords = coords_arr[shrink_arr > high_thresh]
+            cx, cy, cz  = high_coords.mean(axis=0)
+            st.warning(
+                f"⚠️ **High-shrinkage zone** — {high_count:,} voxels ({high_pct:.1f}%) "
+                f"exceed mean + 2σ ({high_thresh*100:.4f}%). "
+                f"Centroid: X={cx:.2f} mm  Y={cy:.2f} mm  Z={cz:.2f} mm. "
+                "Consider adjusting gate position or increasing pack pressure in this region."
+            )
+        else:
+            st.success("✅ Shrinkage distribution is uniform — no high-shrinkage hotspots detected.")
+
+    else:
+        st.warning("No shrinkage data. Please re-run the simulation (Day 6 solver required).")
+        st.info("Will be fully activated after Day 7 (deformation vectors).")
 
 # ── Footer ──
 st.divider()
