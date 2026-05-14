@@ -2177,730 +2177,730 @@ with tab_phase1:
 
     if not st.session_state.get("job_id"):
         st.info("Please run a simulation in the [Simulation] tab first.")
-        st.stop()
-
-    job_id    = st.session_state.job_id
-    cache_key = f"voxel_full_{job_id}"
-
-    if cache_key not in st.session_state:
-        with st.spinner("Loading analysis data..."):
-            st.session_state[cache_key] = get_voxel_data_full(job_id)
-
-    vdata = st.session_state.get(cache_key)
-
-    # ── Pressure distribution section ──
-    st.subheader("🔴 Pressure Distribution")
-    st.caption("Gate (max pressure) → flow front (0 pressure) / BFS weight inversion")
-
-    if vdata is not None and "pressure" in vdata:
-        pressure_arr = vdata["pressure"]
-        coords_arr   = vdata["coords"]
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Max Pressure", f"{pressure_arr.max():.1f} MPa")
-        col2.metric("Avg Pressure", f"{pressure_arr.mean():.1f} MPa")
-        col3.metric("Min Pressure", f"{pressure_arr.min():.1f} MPa")
-
-        p_norm   = (pressure_arr - pressure_arr.min()) / (
-            pressure_arr.max() - pressure_arr.min() + 1e-6
-        )
-        p_height = st.slider("Viewer height", 400, 900, 600, 50, key="p1_h")
-        html_p   = build_webgl_pressure_viewer(
-            coords_arr, p_norm, max_points=10000, mode="pressure"
-        )
-        components.html(html_p, height=p_height, scrolling=False)
-
-        import plotly.express as px
-        st.subheader("Pressure Distribution Histogram")
-        fig = px.histogram(
-            x=pressure_arr, nbins=30,
-            labels={"x": "Pressure (MPa)", "y": "Voxel count"},
-            color_discrete_sequence=["#4488ff"]
-        )
-        fig.update_layout(paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-                          font_color="#8ecfff")
-        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("No pressure data. Re-run the simulation (Day 1 solver required).")
 
-    # ── Weld line section ──
-    st.divider()
-    st.subheader("🟡 Weld Line")
-    st.caption("Where opposing flow fronts meet — structurally weak zone")
+        job_id    = st.session_state.job_id
+        cache_key = f"voxel_full_{job_id}"
 
-    if vdata is not None and "weld" in vdata:
-        weld_arr  = vdata["weld"].astype(bool)
-        weld_cnt  = int(weld_arr.sum())
-        total_cnt = len(weld_arr)
-        weld_pct  = weld_cnt / max(total_cnt, 1) * 100
+        if cache_key not in st.session_state:
+            with st.spinner("Loading analysis data..."):
+                st.session_state[cache_key] = get_voxel_data_full(job_id)
 
-        col1, col2 = st.columns(2)
-        col1.metric("Weld line voxels", f"{weld_cnt:,}")
-        col2.metric("Share of total",   f"{weld_pct:.2f}%")
+        vdata = st.session_state.get(cache_key)
 
-        if weld_cnt > 0:
-            weld_coords = coords_arr[weld_arr]
-            import plotly.graph_objects as go
-            non_weld = coords_arr[~weld_arr][::max(1, int((total_cnt - weld_cnt) / 3000))]
-            fig = go.Figure()
-            fig.add_trace(go.Scatter3d(
-                x=non_weld[:, 0], y=non_weld[:, 1], z=non_weld[:, 2],
-                mode='markers',
-                marker=dict(size=1.5, color='#1a4a7a', opacity=0.3),
-                name='Normal voxels'
-            ))
-            fig.add_trace(go.Scatter3d(
-                x=weld_coords[:, 0], y=weld_coords[:, 1], z=weld_coords[:, 2],
-                mode='markers',
-                marker=dict(size=3.5, color='#ffdd00', opacity=0.9),
-                name='Weld line'
-            ))
-            fig.update_layout(
-                scene=dict(bgcolor='#07101f'),
-                paper_bgcolor='#07101f', font_color='#8ecfff',
-                margin=dict(l=0, r=0, b=0, t=0), height=500,
+        # ── Pressure distribution section ──
+        st.subheader("🔴 Pressure Distribution")
+        st.caption("Gate (max pressure) → flow front (0 pressure) / BFS weight inversion")
+
+        if vdata is not None and "pressure" in vdata:
+            pressure_arr = vdata["pressure"]
+            coords_arr   = vdata["coords"]
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Max Pressure", f"{pressure_arr.max():.1f} MPa")
+            col2.metric("Avg Pressure", f"{pressure_arr.mean():.1f} MPa")
+            col3.metric("Min Pressure", f"{pressure_arr.min():.1f} MPa")
+
+            p_norm   = (pressure_arr - pressure_arr.min()) / (
+                pressure_arr.max() - pressure_arr.min() + 1e-6
             )
+            p_height = st.slider("Viewer height", 400, 900, 600, 50, key="p1_h")
+            html_p   = build_webgl_pressure_viewer(
+                coords_arr, p_norm, max_points=10000, mode="pressure"
+            )
+            components.html(html_p, height=p_height, scrolling=False)
+
+            import plotly.express as px
+            st.subheader("Pressure Distribution Histogram")
+            fig = px.histogram(
+                x=pressure_arr, nbins=30,
+                labels={"x": "Pressure (MPa)", "y": "Voxel count"},
+                color_discrete_sequence=["#4488ff"]
+            )
+            fig.update_layout(paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                              font_color="#8ecfff")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.success("✅ No weld lines detected (good)")
-    else:
-        st.warning("No weld line data. Re-run with the Day 2 solver.")
+            st.warning("No pressure data. Re-run the simulation (Day 1 solver required).")
 
-    # ── Air trap section (Day 3) — reuse build_webgl_pressure_viewer() ──
-    st.divider()
-    st.subheader("🔵 Air Trap + Vent Recommendation")
-    st.caption("Air pockets trapped near end of fill — near-surface + late-fill voxels")
+        # ── Weld line section ──
+        st.divider()
+        st.subheader("🟡 Weld Line")
+        st.caption("Where opposing flow fronts meet — structurally weak zone")
 
-    if vdata is not None and "airtrap" in vdata:
-        at_arr = vdata["airtrap"].astype(bool)
-        at_cnt = int(at_arr.sum())
+        if vdata is not None and "weld" in vdata:
+            weld_arr  = vdata["weld"].astype(bool)
+            weld_cnt  = int(weld_arr.sum())
+            total_cnt = len(weld_arr)
+            weld_pct  = weld_cnt / max(total_cnt, 1) * 100
 
-        col1, col2 = st.columns(2)
-        col1.metric("Air trap voxels", f"{at_cnt:,}")
-        col2.metric("Risk", "⚠️ High" if at_cnt > 50 else "✅ Low")
+            col1, col2 = st.columns(2)
+            col1.metric("Weld line voxels", f"{weld_cnt:,}")
+            col2.metric("Share of total",   f"{weld_pct:.2f}%")
 
-        # recommended vent positions (from results.json)
-        last_result = st.session_state.get("last_result", {})
-        vent_pos    = last_result.get("results", {}).get("vent_positions", [])
-
-        if vent_pos:
-            st.markdown("**📍 Recommended Vent Positions:**")
-            for i, v in enumerate(vent_pos):
-                st.markdown(
-                    f"- Vent {i+1}: X={v[0]:.2f} mm, Y={v[1]:.2f} mm, Z={v[2]:.2f} mm"
+            if weld_cnt > 0:
+                weld_coords = coords_arr[weld_arr]
+                import plotly.graph_objects as go
+                non_weld = coords_arr[~weld_arr][::max(1, int((total_cnt - weld_cnt) / 3000))]
+                fig = go.Figure()
+                fig.add_trace(go.Scatter3d(
+                    x=non_weld[:, 0], y=non_weld[:, 1], z=non_weld[:, 2],
+                    mode='markers',
+                    marker=dict(size=1.5, color='#1a4a7a', opacity=0.3),
+                    name='Normal voxels'
+                ))
+                fig.add_trace(go.Scatter3d(
+                    x=weld_coords[:, 0], y=weld_coords[:, 1], z=weld_coords[:, 2],
+                    mode='markers',
+                    marker=dict(size=3.5, color='#ffdd00', opacity=0.9),
+                    name='Weld line'
+                ))
+                fig.update_layout(
+                    scene=dict(bgcolor='#07101f'),
+                    paper_bgcolor='#07101f', font_color='#8ecfff',
+                    margin=dict(l=0, r=0, b=0, t=0), height=500,
                 )
-
-        if at_cnt > 0:
-            # reuse build_webgl_pressure_viewer() — mode="airtrap"
-            # voxel type in pressure_norm slot: surface=0.0, air trap=1.0
-            at_coords = coords_arr[at_arr]
-            non_at    = coords_arr[~at_arr]
-
-            MAX_AT  = 4000
-            MAX_NON = 4000
-            if len(at_coords) > MAX_AT:
-                idx_at    = np.linspace(0, len(at_coords)-1, MAX_AT, dtype=int)
-                at_coords = at_coords[idx_at]
-            if len(non_at) > MAX_NON:
-                idx_non = np.linspace(0, len(non_at)-1, MAX_NON, dtype=int)
-                non_at  = non_at[idx_non]
-
-            at_combined_coords = np.vstack([non_at, at_coords])
-            at_combined_types  = np.concatenate([
-                np.zeros(len(non_at),    dtype=np.float32),   # surface voxel = 0.0
-                np.ones( len(at_coords), dtype=np.float32),   # air trap = 1.0
-            ])
-            vent_arr = np.array(vent_pos, dtype=np.float32) if vent_pos else None
-
-            at_height = st.slider("Viewer height", 400, 900, 550, 50, key="at_h")
-            html_at = build_webgl_pressure_viewer(
-                at_combined_coords,
-                at_combined_types,
-                max_points=len(at_combined_coords),  # already sampled above
-                mode="airtrap",
-                vent_coords=vent_arr,
-            )
-            components.html(html_at, height=at_height, scrolling=False)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.success("✅ No weld lines detected (good)")
         else:
-            st.success("✅ No air traps detected (good)")
-    else:
-        st.warning("No air trap data. Re-run with the Day 3 solver.")
+            st.warning("No weld line data. Re-run with the Day 2 solver.")
 
-# ═══════════════════════════════════════════════════════════
-# TAB PHASE 2: Temperature Distribution / Cooling Analysis
+        # ── Air trap section (Day 3) — reuse build_webgl_pressure_viewer() ──
+        st.divider()
+        st.subheader("🔵 Air Trap + Vent Recommendation")
+        st.caption("Air pockets trapped near end of fill — near-surface + late-fill voxels")
+
+        if vdata is not None and "airtrap" in vdata:
+            at_arr = vdata["airtrap"].astype(bool)
+            at_cnt = int(at_arr.sum())
+
+            col1, col2 = st.columns(2)
+            col1.metric("Air trap voxels", f"{at_cnt:,}")
+            col2.metric("Risk", "⚠️ High" if at_cnt > 50 else "✅ Low")
+
+            # recommended vent positions (from results.json)
+            last_result = st.session_state.get("last_result", {})
+            vent_pos    = last_result.get("results", {}).get("vent_positions", [])
+
+            if vent_pos:
+                st.markdown("**📍 Recommended Vent Positions:**")
+                for i, v in enumerate(vent_pos):
+                    st.markdown(
+                        f"- Vent {i+1}: X={v[0]:.2f} mm, Y={v[1]:.2f} mm, Z={v[2]:.2f} mm"
+                    )
+
+            if at_cnt > 0:
+                # reuse build_webgl_pressure_viewer() — mode="airtrap"
+                # voxel type in pressure_norm slot: surface=0.0, air trap=1.0
+                at_coords = coords_arr[at_arr]
+                non_at    = coords_arr[~at_arr]
+
+                MAX_AT  = 4000
+                MAX_NON = 4000
+                if len(at_coords) > MAX_AT:
+                    idx_at    = np.linspace(0, len(at_coords)-1, MAX_AT, dtype=int)
+                    at_coords = at_coords[idx_at]
+                if len(non_at) > MAX_NON:
+                    idx_non = np.linspace(0, len(non_at)-1, MAX_NON, dtype=int)
+                    non_at  = non_at[idx_non]
+
+                at_combined_coords = np.vstack([non_at, at_coords])
+                at_combined_types  = np.concatenate([
+                    np.zeros(len(non_at),    dtype=np.float32),   # surface voxel = 0.0
+                    np.ones( len(at_coords), dtype=np.float32),   # air trap = 1.0
+                ])
+                vent_arr = np.array(vent_pos, dtype=np.float32) if vent_pos else None
+
+                at_height = st.slider("Viewer height", 400, 900, 550, 50, key="at_h")
+                html_at = build_webgl_pressure_viewer(
+                    at_combined_coords,
+                    at_combined_types,
+                    max_points=len(at_combined_coords),  # already sampled above
+                    mode="airtrap",
+                    vent_coords=vent_arr,
+                )
+                components.html(html_at, height=at_height, scrolling=False)
+            else:
+                st.success("✅ No air traps detected (good)")
+        else:
+            st.warning("No air trap data. Re-run with the Day 3 solver.")
+
+    # ═══════════════════════════════════════════════════════════
+    # TAB PHASE 2: Temperature Distribution / Cooling Analysis
 # ═══════════════════════════════════════════════════════════
 with tab_phase2:
     st.header("🌡 Temperature Distribution / Cooling Analysis")
 
     if not st.session_state.get("job_id"):
         st.info("Please run a simulation in the [Simulation] tab first.")
-        st.stop()
+    else:
 
-    job_id    = st.session_state.job_id
-    cache_key = f"voxel_full_{job_id}"
+        job_id    = st.session_state.job_id
+        cache_key = f"voxel_full_{job_id}"
 
-    if cache_key not in st.session_state:
-        with st.spinner("Loading analysis data..."):
-            st.session_state[cache_key] = get_voxel_data_full(job_id)
+        if cache_key not in st.session_state:
+            with st.spinner("Loading analysis data..."):
+                st.session_state[cache_key] = get_voxel_data_full(job_id)
 
-    vdata = st.session_state.get(cache_key)
+        vdata = st.session_state.get(cache_key)
 
-    # ── Cooling summary from results.json ──
-    last_result = st.session_state.get("last_result", {})
-    res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
-    mat_name    = st.session_state.get("material", "unknown")
+        # ── Cooling summary from results.json ──
+        last_result = st.session_state.get("last_result", {})
+        res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
+        mat_name    = st.session_state.get("material", "unknown")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Material",            mat_name)
-    col2.metric("Injection Temp",      f"{res_data.get('T_inject_C', '?')} °C")
-    col3.metric("Ejection Temp",       f"{res_data.get('T_eject_C', '?')} °C")
-    col4.metric("Est. Cooling Time",   f"{res_data.get('cooling_time_s', '?')} s")
-
-    st.divider()
-
-    if vdata is not None and "temp" in vdata:
-        temp_arr    = vdata["temp"]
-        coords_arr  = vdata["coords"]
-
-        # ── Temperature 3D viewer ──
-        st.subheader("Temperature Distribution — 3D Viewer")
-        st.caption("Blue (low temp / flow front) → Red (high temp / gate region)")
-
-        # Normalize for the pressure viewer (high value = red = hot)
-        t_norm = (temp_arr - temp_arr.min()) / (temp_arr.max() - temp_arr.min() + 1e-6)
-
-        t_height = st.slider("Viewer height (px)", 400, 900, 600, 50, key="t_h")
-        html_t   = build_webgl_pressure_viewer(
-            coords_arr, t_norm, max_points=10000, mode="pressure"
-        )
-        components.html(html_t, height=t_height, scrolling=False)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Material",            mat_name)
+        col2.metric("Injection Temp",      f"{res_data.get('T_inject_C', '?')} °C")
+        col3.metric("Ejection Temp",       f"{res_data.get('T_eject_C', '?')} °C")
+        col4.metric("Est. Cooling Time",   f"{res_data.get('cooling_time_s', '?')} s")
 
         st.divider()
 
-        # ── Temperature histogram ──
-        import plotly.express as px
-        import plotly.graph_objects as go
+        if vdata is not None and "temp" in vdata:
+            temp_arr    = vdata["temp"]
+            coords_arr  = vdata["coords"]
 
-        st.subheader("Temperature Distribution Histogram")
-        fig_hist = px.histogram(
-            x=temp_arr, nbins=30,
-            labels={"x": "Temperature (°C)", "y": "Voxel count"},
-            color_discrete_sequence=["#ff6644"],
-        )
-        fig_hist.update_layout(
-            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-            font_color="#8ecfff",
-        )
-        st.plotly_chart(fig_hist, use_container_width=True)
+            # ── Temperature 3D viewer ──
+            st.subheader("Temperature Distribution — 3D Viewer")
+            st.caption("Blue (low temp / flow front) → Red (high temp / gate region)")
 
-        st.divider()
+            # Normalize for the pressure viewer (high value = red = hot)
+            t_norm = (temp_arr - temp_arr.min()) / (temp_arr.max() - temp_arr.min() + 1e-6)
 
-        # ── Temperature vs fill order scatter ──
-        st.subheader("Temperature vs Fill Order")
-        st.caption("How temperature drops as material travels further from the gate")
+            t_height = st.slider("Viewer height (px)", 400, 900, 600, 50, key="t_h")
+            html_t   = build_webgl_pressure_viewer(
+                coords_arr, t_norm, max_points=10000, mode="pressure"
+            )
+            components.html(html_t, height=t_height, scrolling=False)
 
-        if "weights" in vdata:
-            weights_arr = vdata["weights"]
-            sample_n    = min(3000, len(weights_arr))
-            idx_s       = np.linspace(0, len(weights_arr) - 1, sample_n, dtype=int)
-            fig_scat = go.Figure()
-            fig_scat.add_trace(go.Scatter(
-                x=weights_arr[idx_s],
-                y=temp_arr[idx_s],
+            st.divider()
+
+            # ── Temperature histogram ──
+            import plotly.express as px
+            import plotly.graph_objects as go
+
+            st.subheader("Temperature Distribution Histogram")
+            fig_hist = px.histogram(
+                x=temp_arr, nbins=30,
+                labels={"x": "Temperature (°C)", "y": "Voxel count"},
+                color_discrete_sequence=["#ff6644"],
+            )
+            fig_hist.update_layout(
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                font_color="#8ecfff",
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+            st.divider()
+
+            # ── Temperature vs fill order scatter ──
+            st.subheader("Temperature vs Fill Order")
+            st.caption("How temperature drops as material travels further from the gate")
+
+            if "weights" in vdata:
+                weights_arr = vdata["weights"]
+                sample_n    = min(3000, len(weights_arr))
+                idx_s       = np.linspace(0, len(weights_arr) - 1, sample_n, dtype=int)
+                fig_scat = go.Figure()
+                fig_scat.add_trace(go.Scatter(
+                    x=weights_arr[idx_s],
+                    y=temp_arr[idx_s],
+                    mode="markers",
+                    marker=dict(
+                        size=3,
+                        color=temp_arr[idx_s],
+                        colorscale="RdYlBu_r",
+                        opacity=0.6,
+                        showscale=True,
+                        colorbar=dict(title="Temp (°C)", tickfont=dict(color="#8ecfff")),
+                    ),
+                    name="Voxels",
+                ))
+                fig_scat.update_layout(
+                    xaxis_title="Fill order (normalized weight, 0=gate → 1=flow front)",
+                    yaxis_title="Temperature (°C)",
+                    paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                    font_color="#8ecfff",
+                    height=380,
+                )
+                st.plotly_chart(fig_scat, use_container_width=True)
+
+            st.divider()
+
+            # ── Cooling analysis summary table ──
+            st.subheader("Cooling Analysis Summary")
+            t_inject = float(res_data.get("T_inject_C", temp_arr.max()))
+            t_eject  = res_data.get("T_eject_C", "?")
+            t_mold   = res_data.get("Tmold_C",   temp_arr.min())
+            ct_s     = res_data.get("cooling_time_s", "?")
+
+            summary_data = {
+                "Item":  [
+                    "Material",
+                    "Injection Temperature",
+                    "Mold Temperature",
+                    "Ejection Temperature",
+                    "Max Recorded Temp",
+                    "Min Recorded Temp",
+                    "Temp Gradient",
+                    "Estimated Cooling Time",
+                ],
+                "Value": [
+                    mat_name,
+                    f"{t_inject:.0f} °C",
+                    f"{float(t_mold):.0f} °C" if isinstance(t_mold, (int, float)) else str(t_mold),
+                    f"{t_eject} °C",
+                    f"{temp_arr.max():.1f} °C",
+                    f"{temp_arr.min():.1f} °C",
+                    f"{temp_arr.max() - temp_arr.min():.1f} °C",
+                    f"{ct_s} s",
+                ],
+            }
+            st.table(summary_data)
+
+            # ── Hot zone warning ──
+            hot_threshold = temp_arr.max() * 0.90
+            hot_count     = int((temp_arr >= hot_threshold).sum())
+            hot_pct       = hot_count / max(len(temp_arr), 1) * 100
+            if hot_pct > 5.0:
+                st.warning(
+                    f"⚠️ **High-temperature zone detected** — {hot_count:,} voxels ({hot_pct:.1f}%) "
+                    f"above {hot_threshold:.0f} °C (90% of max). "
+                    "Check gate area for potential thermal degradation risk."
+                )
+            else:
+                st.success(
+                    f"✅ Temperature distribution is well-balanced — "
+                    f"only {hot_pct:.1f}% of voxels exceed 90% of max temperature."
+                )
+
+        else:
+            st.warning("No temperature data found. Please re-run the simulation (Day 4 solver required).")
+
+        # ══════════════════════════════════════════════════════════
+        # Day 5: Local Wall Thickness + Per-Voxel Cooling Time Map
+        # ══════════════════════════════════════════════════════════
+        if vdata is not None and "thickness" in vdata and "cooling_time_map" in vdata:
+            st.divider()
+            st.subheader("📏 Local Wall Thickness Distribution  (Day 5)")
+            st.caption(
+                "Thickness estimated per voxel via medial-axis approximation "
+                "(2 × distance to nearest surface voxel). "
+                "Thin regions cool faster; thick regions are cooling bottlenecks."
+            )
+
+            thick_arr = vdata["thickness"]
+            coords_arr = vdata["coords"]
+
+            # ── Thickness summary metrics ──────────────────────────────────
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Min thickness",  f"{thick_arr.min():.2f} mm")
+            mc2.metric("Mean thickness", f"{thick_arr.mean():.2f} mm")
+            mc3.metric("Max thickness",  f"{thick_arr.max():.2f} mm")
+            # Thin-wall fraction: voxels thinner than 1/3 of average
+            thin_thresh = thick_arr.mean() / 3.0
+            thin_frac   = float((thick_arr < thin_thresh).sum()) / max(len(thick_arr), 1) * 100
+            mc4.metric("Thin-wall voxels", f"{thin_frac:.1f}%",
+                       help=f"Voxels thinner than {thin_thresh:.2f} mm (1/3 of mean)")
+
+            # Results.json supplementary values (if available)
+            if res_data:
+                rd_mc1, rd_mc2, rd_mc3 = st.columns(3)
+                rd_mc1.metric("Avg thickness (solver)",  f"{res_data.get('avg_thickness_mm', '?')} mm")
+                rd_mc2.metric("Max cooling time (map)",  f"{res_data.get('max_cooling_time_s', '?')} s")
+                rd_mc3.metric("Mean cooling time (map)", f"{res_data.get('mean_cooling_time_s', '?')} s")
+
+            # Thickness 3D viewer — reuse pressure viewer (high = thick = warm colour)
+            th_norm = (thick_arr - thick_arr.min()) / (thick_arr.max() - thick_arr.min() + 1e-6)
+            th_height = st.slider("Viewer height", 400, 900, 550, 50, key="th_h")
+            html_th = build_webgl_pressure_viewer(
+                coords_arr, th_norm, max_points=10000, mode="pressure"
+            )
+            components.html(html_th, height=th_height, scrolling=False)
+
+            # Thickness histogram
+            import plotly.express as px
+            fig_th = px.histogram(
+                x=thick_arr, nbins=40,
+                labels={"x": "Wall thickness (mm)", "y": "Voxel count"},
+                color_discrete_sequence=["#44aaff"],
+            )
+            fig_th.update_layout(
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+            )
+            st.plotly_chart(fig_th, use_container_width=True)
+
+            # ── Per-voxel Cooling Time Map ─────────────────────────────────
+            st.divider()
+            st.subheader("⏱ Per-Voxel Cooling Time Map  (Day 5)")
+            st.caption(
+                "Throne equation applied voxel-by-voxel using local wall thickness. "
+                "Hotspots (longest cooling time) indicate areas with high sink-mark or "
+                "residual stress risk."
+            )
+
+            ct_map_arr = vdata["cooling_time_map"]
+
+            # Cooling time metrics
+            cm1, cm2, cm3 = st.columns(3)
+            cm1.metric("Min cooling time",  f"{ct_map_arr.min():.3f} s")
+            cm2.metric("Mean cooling time", f"{ct_map_arr.mean():.3f} s")
+            cm3.metric("Max cooling time",  f"{ct_map_arr.max():.3f} s")
+
+            # Hotspot location
+            hotspot_idx = int(np.argmax(ct_map_arr))
+            hx, hy, hz  = coords_arr[hotspot_idx]
+            st.warning(
+                f"⚠️ **Cooling hotspot** — longest cooling time "
+                f"**{ct_map_arr[hotspot_idx]:.3f} s** at "
+                f"X={hx:.2f} mm  Y={hy:.2f} mm  Z={hz:.2f} mm. "
+                "Consider adding conformal cooling channels or increasing local gate proximity."
+            )
+
+            # Cooling time 3D viewer
+            ct_norm = (ct_map_arr - ct_map_arr.min()) / (ct_map_arr.max() - ct_map_arr.min() + 1e-6)
+            ct_height = st.slider("Viewer height", 400, 900, 550, 50, key="ct_h")
+            html_ct = build_webgl_pressure_viewer(
+                coords_arr, ct_norm, max_points=10000, mode="pressure"
+            )
+            components.html(html_ct, height=ct_height, scrolling=False)
+
+            # Cooling time histogram
+            import plotly.express as px
+            fig_ct = px.histogram(
+                x=ct_map_arr, nbins=40,
+                labels={"x": "Cooling time (s)", "y": "Voxel count"},
+                color_discrete_sequence=["#ff8844"],
+            )
+            fig_ct.update_layout(
+                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+            )
+            st.plotly_chart(fig_ct, use_container_width=True)
+
+            # Cooling time vs thickness scatter — confirm Throne h^2 relationship
+            import plotly.graph_objects as go
+            st.subheader("Cooling Time vs Wall Thickness")
+            st.caption("Expected quadratic relationship: tc ∝ h²  (Throne equation)")
+            sample_n   = min(3000, len(thick_arr))
+            idx_ct     = np.linspace(0, len(thick_arr) - 1, sample_n, dtype=int)
+            fig_cts = go.Figure()
+            fig_cts.add_trace(go.Scatter(
+                x=thick_arr[idx_ct],
+                y=ct_map_arr[idx_ct],
                 mode="markers",
                 marker=dict(
                     size=3,
-                    color=temp_arr[idx_s],
-                    colorscale="RdYlBu_r",
-                    opacity=0.6,
+                    color=ct_map_arr[idx_ct],
+                    colorscale="YlOrRd",
+                    opacity=0.55,
                     showscale=True,
-                    colorbar=dict(title="Temp (°C)", tickfont=dict(color="#8ecfff")),
+                    colorbar=dict(title="tc (s)", tickfont=dict(color="#8ecfff")),
                 ),
                 name="Voxels",
             ))
-            fig_scat.update_layout(
-                xaxis_title="Fill order (normalized weight, 0=gate → 1=flow front)",
-                yaxis_title="Temperature (°C)",
+            fig_cts.update_layout(
+                xaxis_title="Local wall thickness (mm)",
+                yaxis_title="Cooling time (s)",
                 paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
                 font_color="#8ecfff",
-                height=380,
+                height=360,
             )
-            st.plotly_chart(fig_scat, use_container_width=True)
+            st.plotly_chart(fig_cts, use_container_width=True)
 
-        st.divider()
-
-        # ── Cooling analysis summary table ──
-        st.subheader("Cooling Analysis Summary")
-        t_inject = float(res_data.get("T_inject_C", temp_arr.max()))
-        t_eject  = res_data.get("T_eject_C", "?")
-        t_mold   = res_data.get("Tmold_C",   temp_arr.min())
-        ct_s     = res_data.get("cooling_time_s", "?")
-
-        summary_data = {
-            "Item":  [
-                "Material",
-                "Injection Temperature",
-                "Mold Temperature",
-                "Ejection Temperature",
-                "Max Recorded Temp",
-                "Min Recorded Temp",
-                "Temp Gradient",
-                "Estimated Cooling Time",
-            ],
-            "Value": [
-                mat_name,
-                f"{t_inject:.0f} °C",
-                f"{float(t_mold):.0f} °C" if isinstance(t_mold, (int, float)) else str(t_mold),
-                f"{t_eject} °C",
-                f"{temp_arr.max():.1f} °C",
-                f"{temp_arr.min():.1f} °C",
-                f"{temp_arr.max() - temp_arr.min():.1f} °C",
-                f"{ct_s} s",
-            ],
-        }
-        st.table(summary_data)
-
-        # ── Hot zone warning ──
-        hot_threshold = temp_arr.max() * 0.90
-        hot_count     = int((temp_arr >= hot_threshold).sum())
-        hot_pct       = hot_count / max(len(temp_arr), 1) * 100
-        if hot_pct > 5.0:
-            st.warning(
-                f"⚠️ **High-temperature zone detected** — {hot_count:,} voxels ({hot_pct:.1f}%) "
-                f"above {hot_threshold:.0f} °C (90% of max). "
-                "Check gate area for potential thermal degradation risk."
-            )
-        else:
-            st.success(
-                f"✅ Temperature distribution is well-balanced — "
-                f"only {hot_pct:.1f}% of voxels exceed 90% of max temperature."
+        elif vdata is not None and "temp" in vdata:
+            # Day 4 data present but Day 5 not yet computed
+            st.divider()
+            st.info(
+                "📏 **Wall thickness map and per-voxel cooling time** will appear here "
+                "after re-running the simulation with the Day 5 solver."
             )
 
-    else:
-        st.warning("No temperature data found. Please re-run the simulation (Day 4 solver required).")
-
-    # ══════════════════════════════════════════════════════════
-    # Day 5: Local Wall Thickness + Per-Voxel Cooling Time Map
-    # ══════════════════════════════════════════════════════════
-    if vdata is not None and "thickness" in vdata and "cooling_time_map" in vdata:
-        st.divider()
-        st.subheader("📏 Local Wall Thickness Distribution  (Day 5)")
-        st.caption(
-            "Thickness estimated per voxel via medial-axis approximation "
-            "(2 × distance to nearest surface voxel). "
-            "Thin regions cool faster; thick regions are cooling bottlenecks."
-        )
-
-        thick_arr = vdata["thickness"]
-        coords_arr = vdata["coords"]
-
-        # ── Thickness summary metrics ──────────────────────────────────
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("Min thickness",  f"{thick_arr.min():.2f} mm")
-        mc2.metric("Mean thickness", f"{thick_arr.mean():.2f} mm")
-        mc3.metric("Max thickness",  f"{thick_arr.max():.2f} mm")
-        # Thin-wall fraction: voxels thinner than 1/3 of average
-        thin_thresh = thick_arr.mean() / 3.0
-        thin_frac   = float((thick_arr < thin_thresh).sum()) / max(len(thick_arr), 1) * 100
-        mc4.metric("Thin-wall voxels", f"{thin_frac:.1f}%",
-                   help=f"Voxels thinner than {thin_thresh:.2f} mm (1/3 of mean)")
-
-        # Results.json supplementary values (if available)
-        if res_data:
-            rd_mc1, rd_mc2, rd_mc3 = st.columns(3)
-            rd_mc1.metric("Avg thickness (solver)",  f"{res_data.get('avg_thickness_mm', '?')} mm")
-            rd_mc2.metric("Max cooling time (map)",  f"{res_data.get('max_cooling_time_s', '?')} s")
-            rd_mc3.metric("Mean cooling time (map)", f"{res_data.get('mean_cooling_time_s', '?')} s")
-
-        # Thickness 3D viewer — reuse pressure viewer (high = thick = warm colour)
-        th_norm = (thick_arr - thick_arr.min()) / (thick_arr.max() - thick_arr.min() + 1e-6)
-        th_height = st.slider("Viewer height", 400, 900, 550, 50, key="th_h")
-        html_th = build_webgl_pressure_viewer(
-            coords_arr, th_norm, max_points=10000, mode="pressure"
-        )
-        components.html(html_th, height=th_height, scrolling=False)
-
-        # Thickness histogram
-        import plotly.express as px
-        fig_th = px.histogram(
-            x=thick_arr, nbins=40,
-            labels={"x": "Wall thickness (mm)", "y": "Voxel count"},
-            color_discrete_sequence=["#44aaff"],
-        )
-        fig_th.update_layout(
-            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
-        )
-        st.plotly_chart(fig_th, use_container_width=True)
-
-        # ── Per-voxel Cooling Time Map ─────────────────────────────────
-        st.divider()
-        st.subheader("⏱ Per-Voxel Cooling Time Map  (Day 5)")
-        st.caption(
-            "Throne equation applied voxel-by-voxel using local wall thickness. "
-            "Hotspots (longest cooling time) indicate areas with high sink-mark or "
-            "residual stress risk."
-        )
-
-        ct_map_arr = vdata["cooling_time_map"]
-
-        # Cooling time metrics
-        cm1, cm2, cm3 = st.columns(3)
-        cm1.metric("Min cooling time",  f"{ct_map_arr.min():.3f} s")
-        cm2.metric("Mean cooling time", f"{ct_map_arr.mean():.3f} s")
-        cm3.metric("Max cooling time",  f"{ct_map_arr.max():.3f} s")
-
-        # Hotspot location
-        hotspot_idx = int(np.argmax(ct_map_arr))
-        hx, hy, hz  = coords_arr[hotspot_idx]
-        st.warning(
-            f"⚠️ **Cooling hotspot** — longest cooling time "
-            f"**{ct_map_arr[hotspot_idx]:.3f} s** at "
-            f"X={hx:.2f} mm  Y={hy:.2f} mm  Z={hz:.2f} mm. "
-            "Consider adding conformal cooling channels or increasing local gate proximity."
-        )
-
-        # Cooling time 3D viewer
-        ct_norm = (ct_map_arr - ct_map_arr.min()) / (ct_map_arr.max() - ct_map_arr.min() + 1e-6)
-        ct_height = st.slider("Viewer height", 400, 900, 550, 50, key="ct_h")
-        html_ct = build_webgl_pressure_viewer(
-            coords_arr, ct_norm, max_points=10000, mode="pressure"
-        )
-        components.html(html_ct, height=ct_height, scrolling=False)
-
-        # Cooling time histogram
-        import plotly.express as px
-        fig_ct = px.histogram(
-            x=ct_map_arr, nbins=40,
-            labels={"x": "Cooling time (s)", "y": "Voxel count"},
-            color_discrete_sequence=["#ff8844"],
-        )
-        fig_ct.update_layout(
-            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
-        )
-        st.plotly_chart(fig_ct, use_container_width=True)
-
-        # Cooling time vs thickness scatter — confirm Throne h^2 relationship
-        import plotly.graph_objects as go
-        st.subheader("Cooling Time vs Wall Thickness")
-        st.caption("Expected quadratic relationship: tc ∝ h²  (Throne equation)")
-        sample_n   = min(3000, len(thick_arr))
-        idx_ct     = np.linspace(0, len(thick_arr) - 1, sample_n, dtype=int)
-        fig_cts = go.Figure()
-        fig_cts.add_trace(go.Scatter(
-            x=thick_arr[idx_ct],
-            y=ct_map_arr[idx_ct],
-            mode="markers",
-            marker=dict(
-                size=3,
-                color=ct_map_arr[idx_ct],
-                colorscale="YlOrRd",
-                opacity=0.55,
-                showscale=True,
-                colorbar=dict(title="tc (s)", tickfont=dict(color="#8ecfff")),
-            ),
-            name="Voxels",
-        ))
-        fig_cts.update_layout(
-            xaxis_title="Local wall thickness (mm)",
-            yaxis_title="Cooling time (s)",
-            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-            font_color="#8ecfff",
-            height=360,
-        )
-        st.plotly_chart(fig_cts, use_container_width=True)
-
-    elif vdata is not None and "temp" in vdata:
-        # Day 4 data present but Day 5 not yet computed
-        st.divider()
-        st.info(
-            "📏 **Wall thickness map and per-voxel cooling time** will appear here "
-            "after re-running the simulation with the Day 5 solver."
-        )
-
-# ═══════════════════════════════════════════════════════════
-# TAB PHASE 3: Shrinkage / Deformation (Day 6~7)
-# ═══════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════
+    # TAB PHASE 3: Shrinkage / Deformation (Day 6~7)
+    # ═══════════════════════════════════════════════════════════
 with tab_phase3:
     st.header("📐 Shrinkage / Deformation Prediction")
     st.caption("Injection-process shrinkage only — sintering shrinkage (~14~16%) shown separately as reference.")
 
     if not st.session_state.get("job_id"):
         st.info("Please run a simulation in the [Simulation] tab first.")
-        st.stop()
+    else:
 
-    job_id    = st.session_state.job_id
-    cache_key = f"voxel_full_{job_id}"
+        job_id    = st.session_state.job_id
+        cache_key = f"voxel_full_{job_id}"
 
-    if cache_key not in st.session_state:
-        with st.spinner("Loading analysis data..."):
-            st.session_state[cache_key] = get_voxel_data_full(job_id)
+        if cache_key not in st.session_state:
+            with st.spinner("Loading analysis data..."):
+                st.session_state[cache_key] = get_voxel_data_full(job_id)
 
-    vdata = st.session_state.get(cache_key)
+        vdata = st.session_state.get(cache_key)
 
-    last_result = st.session_state.get("last_result", {})
-    res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
-    mat_name    = st.session_state.get("material", "unknown")
+        last_result = st.session_state.get("last_result", {})
+        res_data    = last_result.get("results", {}) if isinstance(last_result, dict) else {}
+        mat_name    = st.session_state.get("material", "unknown")
 
-    if vdata is not None and "shrinkage" in vdata:
-        import plotly.express as px
-        import plotly.graph_objects as go
+        if vdata is not None and "shrinkage" in vdata:
+            import plotly.express as px
+            import plotly.graph_objects as go
 
-        shrink_arr = vdata["shrinkage"]
-        coords_arr = vdata["coords"]
+            shrink_arr = vdata["shrinkage"]
+            coords_arr = vdata["coords"]
 
-        # ── Deformation vectors (Day 7) ───────────────────────────────
-        deform_arr = vdata.get("deform_vectors", None)
-        if deform_arr is not None and deform_arr.ndim == 2:
-            deform_mag = np.linalg.norm(deform_arr, axis=1)
-        else:
-            deform_mag = np.zeros(len(shrink_arr), dtype=np.float32)
+            # ── Deformation vectors (Day 7) ───────────────────────────────
+            deform_arr = vdata.get("deform_vectors", None)
+            if deform_arr is not None and deform_arr.ndim == 2:
+                deform_mag = np.linalg.norm(deform_arr, axis=1)
+            else:
+                deform_mag = np.zeros(len(shrink_arr), dtype=np.float32)
 
-        # ── Summary metrics ───────────────────────────────────────────
-        sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.metric("Max shrinkage",   f"{shrink_arr.max()*100:.4f}%")
-        sc2.metric("Mean shrinkage",  f"{shrink_arr.mean()*100:.4f}%")
-        sc3.metric("Max deformation", f"{deform_mag.max()*1000:.3f} μm")
-        sint_pct = res_data.get("sintering_shrinkage_pct", "~14.5")
-        sc4.metric("Sintering shrinkage (ref)", f"{sint_pct}%",
-                   help="Separate sintering step shrinkage from materials_db — not included above.")
+            # ── Summary metrics ───────────────────────────────────────────
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("Max shrinkage",   f"{shrink_arr.max()*100:.4f}%")
+            sc2.metric("Mean shrinkage",  f"{shrink_arr.mean()*100:.4f}%")
+            sc3.metric("Max deformation", f"{deform_mag.max()*1000:.3f} μm")
+            sint_pct = res_data.get("sintering_shrinkage_pct", "~14.5")
+            sc4.metric("Sintering shrinkage (ref)", f"{sint_pct}%",
+                       help="Separate sintering step shrinkage from materials_db — not included above.")
 
-        # ── Max deformation location warning ─────────────────────────
-        if deform_mag.max() > 0:
-            max_def_idx  = int(np.argmax(deform_mag))
-            mx, my, mz   = coords_arr[max_def_idx]
-            dvx, dvy, dvz = deform_arr[max_def_idx]
-            st.warning(
-                f"⚠️ **Maximum deformation** — {deform_mag[max_def_idx]*1000:.3f} μm "
-                f"at X={mx:.2f} mm  Y={my:.2f} mm  Z={mz:.2f} mm. "
-                f"Direction vector: ({dvx:+.4f}, {dvy:+.4f}, {dvz:+.4f}) mm. "
-                "Consider adjusting gate position or pack pressure to reduce local gradient."
+            # ── Max deformation location warning ─────────────────────────
+            if deform_mag.max() > 0:
+                max_def_idx  = int(np.argmax(deform_mag))
+                mx, my, mz   = coords_arr[max_def_idx]
+                dvx, dvy, dvz = deform_arr[max_def_idx]
+                st.warning(
+                    f"⚠️ **Maximum deformation** — {deform_mag[max_def_idx]*1000:.3f} μm "
+                    f"at X={mx:.2f} mm  Y={my:.2f} mm  Z={mz:.2f} mm. "
+                    f"Direction vector: ({dvx:+.4f}, {dvy:+.4f}, {dvz:+.4f}) mm. "
+                    "Consider adjusting gate position or pack pressure to reduce local gradient."
+                )
+
+            st.divider()
+
+            # ── Shrinkage 3D viewer ───────────────────────────────────────
+            st.subheader("Shrinkage Distribution — 3D Viewer")
+            st.caption("Blue (low shrinkage / high-pressure gate zone) → Red (high shrinkage / low-pressure flow front)")
+
+            s_norm = (shrink_arr - shrink_arr.min()) / (shrink_arr.max() - shrink_arr.min() + 1e-6)
+            s_height = st.slider("Viewer height", 400, 900, 600, 50, key="s_h")
+            html_s = build_webgl_pressure_viewer(
+                coords_arr, s_norm, max_points=10000, mode="pressure"
             )
+            components.html(html_s, height=s_height, scrolling=False)
 
-        st.divider()
+            st.divider()
 
-        # ── Shrinkage 3D viewer ───────────────────────────────────────
-        st.subheader("Shrinkage Distribution — 3D Viewer")
-        st.caption("Blue (low shrinkage / high-pressure gate zone) → Red (high shrinkage / low-pressure flow front)")
+            # ── Deformation magnitude 3D viewer ──────────────────────────
+            st.subheader("Deformation Magnitude — 3D Viewer  (Day 7)")
+            st.caption("Blue (small displacement) → Red (large displacement / high shrinkage gradient)")
 
-        s_norm = (shrink_arr - shrink_arr.min()) / (shrink_arr.max() - shrink_arr.min() + 1e-6)
-        s_height = st.slider("Viewer height", 400, 900, 600, 50, key="s_h")
-        html_s = build_webgl_pressure_viewer(
-            coords_arr, s_norm, max_points=10000, mode="pressure"
-        )
-        components.html(html_s, height=s_height, scrolling=False)
+            if deform_mag.max() > 0:
+                d_norm = (deform_mag - deform_mag.min()) / (deform_mag.max() - deform_mag.min() + 1e-6)
+                d_height = st.slider("Viewer height", 400, 900, 600, 50, key="d_h")
+                html_d = build_webgl_pressure_viewer(
+                    coords_arr, d_norm, max_points=10000, mode="pressure"
+                )
+                components.html(html_d, height=d_height, scrolling=False)
+            else:
+                st.info("Deformation data not available — re-run simulation with Day 7 solver.")
 
-        st.divider()
+            st.divider()
 
-        # ── Deformation magnitude 3D viewer ──────────────────────────
-        st.subheader("Deformation Magnitude — 3D Viewer  (Day 7)")
-        st.caption("Blue (small displacement) → Red (large displacement / high shrinkage gradient)")
+            # ── Deformation magnitude histogram ──────────────────────────
+            if deform_mag.max() > 0:
+                st.subheader("Deformation Magnitude Histogram")
+                fig_dm = px.histogram(
+                    x=deform_mag * 1000, nbins=40,
+                    labels={"x": "Deformation magnitude (μm)", "y": "Voxel count"},
+                    color_discrete_sequence=["#44ffaa"],
+                )
+                fig_dm.update_layout(
+                    paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
+                )
+                st.plotly_chart(fig_dm, use_container_width=True)
 
-        if deform_mag.max() > 0:
-            d_norm = (deform_mag - deform_mag.min()) / (deform_mag.max() - deform_mag.min() + 1e-6)
-            d_height = st.slider("Viewer height", 400, 900, 600, 50, key="d_h")
-            html_d = build_webgl_pressure_viewer(
-                coords_arr, d_norm, max_points=10000, mode="pressure"
+            st.divider()
+
+            # ── Deformation quiver (XY plane projection) ──────────────────
+            if deform_arr is not None and deform_arr.ndim == 2 and deform_mag.max() > 0:
+                st.subheader("Deformation Quiver — XY Projection  (Day 7)")
+                st.caption("Arrows show displacement direction and relative magnitude (sampled)")
+
+                sample_n = min(600, len(coords_arr))
+                idx_q    = np.linspace(0, len(coords_arr) - 1, sample_n, dtype=int)
+
+                cx = coords_arr[idx_q, 0]
+                cy = coords_arr[idx_q, 1]
+                ux = deform_arr[idx_q, 0]
+                uy = deform_arr[idx_q, 1]
+                mag_q = deform_mag[idx_q]
+
+                fig_q = go.Figure()
+                # Draw arrows as annotation-free scatter + line segments
+                arrow_x, arrow_y = [], []
+                for xi, yi, uxi, uyi in zip(cx, cy, ux, uy):
+                    arrow_x += [xi, xi + uxi * 500, None]
+                    arrow_y += [yi, yi + uyi * 500, None]
+
+                fig_q.add_trace(go.Scatter(
+                    x=arrow_x, y=arrow_y,
+                    mode="lines",
+                    line=dict(color="#44ffaa", width=1),
+                    name="Displacement",
+                    opacity=0.6,
+                ))
+                fig_q.add_trace(go.Scatter(
+                    x=cx, y=cy,
+                    mode="markers",
+                    marker=dict(
+                        size=4,
+                        color=mag_q * 1000,
+                        colorscale="YlOrRd",
+                        showscale=True,
+                        colorbar=dict(title="Deform (μm)", tickfont=dict(color="#8ecfff")),
+                    ),
+                    name="Voxels",
+                ))
+                fig_q.update_layout(
+                    xaxis_title="X (mm)", yaxis_title="Y (mm)",
+                    paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                    font_color="#8ecfff",
+                    height=420,
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_q, use_container_width=True)
+
+            st.divider()
+
+            # ── Shrinkage histogram ───────────────────────────────────────
+            st.subheader("Shrinkage Distribution Histogram")
+            fig_sh = px.histogram(
+                x=shrink_arr * 100, nbins=40,
+                labels={"x": "Shrinkage (%)", "y": "Voxel count"},
+                color_discrete_sequence=["#aa44ff"],
             )
-            components.html(html_d, height=d_height, scrolling=False)
-        else:
-            st.info("Deformation data not available — re-run simulation with Day 7 solver.")
-
-        st.divider()
-
-        # ── Deformation magnitude histogram ──────────────────────────
-        if deform_mag.max() > 0:
-            st.subheader("Deformation Magnitude Histogram")
-            fig_dm = px.histogram(
-                x=deform_mag * 1000, nbins=40,
-                labels={"x": "Deformation magnitude (μm)", "y": "Voxel count"},
-                color_discrete_sequence=["#44ffaa"],
-            )
-            fig_dm.update_layout(
+            fig_sh.update_layout(
                 paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
             )
-            st.plotly_chart(fig_dm, use_container_width=True)
+            st.plotly_chart(fig_sh, use_container_width=True)
 
-        st.divider()
+            st.divider()
 
-        # ── Deformation quiver (XY plane projection) ──────────────────
-        if deform_arr is not None and deform_arr.ndim == 2 and deform_mag.max() > 0:
-            st.subheader("Deformation Quiver — XY Projection  (Day 7)")
-            st.caption("Arrows show displacement direction and relative magnitude (sampled)")
+            # ── Shrinkage vs pressure scatter ─────────────────────────────
+            if "pressure" in vdata:
+                st.subheader("Shrinkage vs Injection Pressure")
+                st.caption("Higher pressure → more pressure compensation → less net shrinkage")
+                pressure_arr = vdata["pressure"]
+                sample_n     = min(3000, len(shrink_arr))
+                idx_sp       = np.linspace(0, len(shrink_arr) - 1, sample_n, dtype=int)
+                fig_sp = go.Figure()
+                fig_sp.add_trace(go.Scatter(
+                    x=pressure_arr[idx_sp],
+                    y=shrink_arr[idx_sp] * 100,
+                    mode="markers",
+                    marker=dict(
+                        size=3,
+                        color=shrink_arr[idx_sp] * 100,
+                        colorscale="Plasma",
+                        opacity=0.55,
+                        showscale=True,
+                        colorbar=dict(title="Shrinkage (%)", tickfont=dict(color="#8ecfff")),
+                    ),
+                    name="Voxels",
+                ))
+                fig_sp.update_layout(
+                    xaxis_title="Injection pressure (MPa)",
+                    yaxis_title="Shrinkage (%)",
+                    paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                    font_color="#8ecfff", height=360,
+                )
+                st.plotly_chart(fig_sp, use_container_width=True)
 
-            sample_n = min(600, len(coords_arr))
-            idx_q    = np.linspace(0, len(coords_arr) - 1, sample_n, dtype=int)
+            st.divider()
 
-            cx = coords_arr[idx_q, 0]
-            cy = coords_arr[idx_q, 1]
-            ux = deform_arr[idx_q, 0]
-            uy = deform_arr[idx_q, 1]
-            mag_q = deform_mag[idx_q]
+            # ── Shrinkage vs temperature scatter ──────────────────────────
+            if "temp" in vdata:
+                st.subheader("Shrinkage vs Temperature")
+                st.caption("Higher temperature → larger thermal strain → more shrinkage")
+                temp_arr = vdata["temp"]
+                sample_n = min(3000, len(shrink_arr))
+                idx_st   = np.linspace(0, len(shrink_arr) - 1, sample_n, dtype=int)
+                fig_st = go.Figure()
+                fig_st.add_trace(go.Scatter(
+                    x=temp_arr[idx_st],
+                    y=shrink_arr[idx_st] * 100,
+                    mode="markers",
+                    marker=dict(
+                        size=3,
+                        color=temp_arr[idx_st],
+                        colorscale="RdYlBu_r",
+                        opacity=0.55,
+                        showscale=True,
+                        colorbar=dict(title="Temp (°C)", tickfont=dict(color="#8ecfff")),
+                    ),
+                    name="Voxels",
+                ))
+                fig_st.update_layout(
+                    xaxis_title="Temperature (°C)",
+                    yaxis_title="Shrinkage (%)",
+                    paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
+                    font_color="#8ecfff", height=360,
+                )
+                st.plotly_chart(fig_st, use_container_width=True)
 
-            fig_q = go.Figure()
-            # Draw arrows as annotation-free scatter + line segments
-            arrow_x, arrow_y = [], []
-            for xi, yi, uxi, uyi in zip(cx, cy, ux, uy):
-                arrow_x += [xi, xi + uxi * 500, None]
-                arrow_y += [yi, yi + uyi * 500, None]
+            st.divider()
 
-            fig_q.add_trace(go.Scatter(
-                x=arrow_x, y=arrow_y,
-                mode="lines",
-                line=dict(color="#44ffaa", width=1),
-                name="Displacement",
-                opacity=0.6,
-            ))
-            fig_q.add_trace(go.Scatter(
-                x=cx, y=cy,
-                mode="markers",
-                marker=dict(
-                    size=4,
-                    color=mag_q * 1000,
-                    colorscale="YlOrRd",
-                    showscale=True,
-                    colorbar=dict(title="Deform (μm)", tickfont=dict(color="#8ecfff")),
-                ),
-                name="Voxels",
-            ))
-            fig_q.update_layout(
-                xaxis_title="X (mm)", yaxis_title="Y (mm)",
-                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-                font_color="#8ecfff",
-                height=420,
-                showlegend=False,
+            # ── Total shrinkage reference table ───────────────────────────
+            st.subheader("ℹ️ Total Shrinkage Reference (Injection + Sintering)")
+            inj_mean = shrink_arr.mean() * 100
+            sint_val = float(str(sint_pct).replace("%", "").strip()) if sint_pct != "~14.5" else 14.5
+            total_ref = inj_mean + sint_val
+
+            ref_data = {
+                "Item": [
+                    "Injection shrinkage (mean, this simulation)",
+                    f"Sintering shrinkage (ref, {mat_name})",
+                    "Total estimated shrinkage (injection + sintering)",
+                ],
+                "Value": [
+                    f"{inj_mean:.4f}%",
+                    f"{sint_val:.1f}%",
+                    f"{total_ref:.2f}%",
+                ],
+            }
+            st.table(ref_data)
+            st.caption(
+                "⚠️ Sintering shrinkage is isotropic and applied uniformly at the part level. "
+                "Injection shrinkage is spatially distributed (shown above). "
+                "These values are first-order estimates — validate against actual part measurements."
             )
-            st.plotly_chart(fig_q, use_container_width=True)
 
-        st.divider()
+            # ── High-shrinkage zone warning ───────────────────────────────
+            high_thresh = shrink_arr.mean() + 2 * shrink_arr.std()
+            high_count  = int((shrink_arr > high_thresh).sum())
+            high_pct    = high_count / max(len(shrink_arr), 1) * 100
+            if high_count > 0:
+                high_coords = coords_arr[shrink_arr > high_thresh]
+                cx2, cy2, cz2 = high_coords.mean(axis=0)
+                st.warning(
+                    f"⚠️ **High-shrinkage zone** — {high_count:,} voxels ({high_pct:.1f}%) "
+                    f"exceed mean + 2σ ({high_thresh*100:.4f}%). "
+                    f"Centroid: X={cx2:.2f} mm  Y={cy2:.2f} mm  Z={cz2:.2f} mm. "
+                    "Consider adjusting gate position or increasing pack pressure in this region."
+                )
+            else:
+                st.success("✅ Shrinkage distribution is uniform — no high-shrinkage hotspots detected.")
 
-        # ── Shrinkage histogram ───────────────────────────────────────
-        st.subheader("Shrinkage Distribution Histogram")
-        fig_sh = px.histogram(
-            x=shrink_arr * 100, nbins=40,
-            labels={"x": "Shrinkage (%)", "y": "Voxel count"},
-            color_discrete_sequence=["#aa44ff"],
-        )
-        fig_sh.update_layout(
-            paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e", font_color="#8ecfff"
-        )
-        st.plotly_chart(fig_sh, use_container_width=True)
-
-        st.divider()
-
-        # ── Shrinkage vs pressure scatter ─────────────────────────────
-        if "pressure" in vdata:
-            st.subheader("Shrinkage vs Injection Pressure")
-            st.caption("Higher pressure → more pressure compensation → less net shrinkage")
-            pressure_arr = vdata["pressure"]
-            sample_n     = min(3000, len(shrink_arr))
-            idx_sp       = np.linspace(0, len(shrink_arr) - 1, sample_n, dtype=int)
-            fig_sp = go.Figure()
-            fig_sp.add_trace(go.Scatter(
-                x=pressure_arr[idx_sp],
-                y=shrink_arr[idx_sp] * 100,
-                mode="markers",
-                marker=dict(
-                    size=3,
-                    color=shrink_arr[idx_sp] * 100,
-                    colorscale="Plasma",
-                    opacity=0.55,
-                    showscale=True,
-                    colorbar=dict(title="Shrinkage (%)", tickfont=dict(color="#8ecfff")),
-                ),
-                name="Voxels",
-            ))
-            fig_sp.update_layout(
-                xaxis_title="Injection pressure (MPa)",
-                yaxis_title="Shrinkage (%)",
-                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-                font_color="#8ecfff", height=360,
-            )
-            st.plotly_chart(fig_sp, use_container_width=True)
-
-        st.divider()
-
-        # ── Shrinkage vs temperature scatter ──────────────────────────
-        if "temp" in vdata:
-            st.subheader("Shrinkage vs Temperature")
-            st.caption("Higher temperature → larger thermal strain → more shrinkage")
-            temp_arr = vdata["temp"]
-            sample_n = min(3000, len(shrink_arr))
-            idx_st   = np.linspace(0, len(shrink_arr) - 1, sample_n, dtype=int)
-            fig_st = go.Figure()
-            fig_st.add_trace(go.Scatter(
-                x=temp_arr[idx_st],
-                y=shrink_arr[idx_st] * 100,
-                mode="markers",
-                marker=dict(
-                    size=3,
-                    color=temp_arr[idx_st],
-                    colorscale="RdYlBu_r",
-                    opacity=0.55,
-                    showscale=True,
-                    colorbar=dict(title="Temp (°C)", tickfont=dict(color="#8ecfff")),
-                ),
-                name="Voxels",
-            ))
-            fig_st.update_layout(
-                xaxis_title="Temperature (°C)",
-                yaxis_title="Shrinkage (%)",
-                paper_bgcolor="#07101f", plot_bgcolor="#0d1a2e",
-                font_color="#8ecfff", height=360,
-            )
-            st.plotly_chart(fig_st, use_container_width=True)
-
-        st.divider()
-
-        # ── Total shrinkage reference table ───────────────────────────
-        st.subheader("ℹ️ Total Shrinkage Reference (Injection + Sintering)")
-        inj_mean = shrink_arr.mean() * 100
-        sint_val = float(str(sint_pct).replace("%", "").strip()) if sint_pct != "~14.5" else 14.5
-        total_ref = inj_mean + sint_val
-
-        ref_data = {
-            "Item": [
-                "Injection shrinkage (mean, this simulation)",
-                f"Sintering shrinkage (ref, {mat_name})",
-                "Total estimated shrinkage (injection + sintering)",
-            ],
-            "Value": [
-                f"{inj_mean:.4f}%",
-                f"{sint_val:.1f}%",
-                f"{total_ref:.2f}%",
-            ],
-        }
-        st.table(ref_data)
-        st.caption(
-            "⚠️ Sintering shrinkage is isotropic and applied uniformly at the part level. "
-            "Injection shrinkage is spatially distributed (shown above). "
-            "These values are first-order estimates — validate against actual part measurements."
-        )
-
-        # ── High-shrinkage zone warning ───────────────────────────────
-        high_thresh = shrink_arr.mean() + 2 * shrink_arr.std()
-        high_count  = int((shrink_arr > high_thresh).sum())
-        high_pct    = high_count / max(len(shrink_arr), 1) * 100
-        if high_count > 0:
-            high_coords = coords_arr[shrink_arr > high_thresh]
-            cx2, cy2, cz2 = high_coords.mean(axis=0)
-            st.warning(
-                f"⚠️ **High-shrinkage zone** — {high_count:,} voxels ({high_pct:.1f}%) "
-                f"exceed mean + 2σ ({high_thresh*100:.4f}%). "
-                f"Centroid: X={cx2:.2f} mm  Y={cy2:.2f} mm  Z={cz2:.2f} mm. "
-                "Consider adjusting gate position or increasing pack pressure in this region."
-            )
         else:
-            st.success("✅ Shrinkage distribution is uniform — no high-shrinkage hotspots detected.")
+            st.warning("No shrinkage data. Please re-run the simulation (Day 6 solver required).")
+            st.info("Will be fully activated after Day 7 (deformation vectors).")
 
-    else:
-        st.warning("No shrinkage data. Please re-run the simulation (Day 6 solver required).")
-        st.info("Will be fully activated after Day 7 (deformation vectors).")
-
-# ── Footer ──
-st.divider()
-st.markdown(
-    "<div style='text-align: center; color: gray;'>"
-    "<small>MIM-Ops Pro v3.2 | Oracle Cloud Edition | © 2024</small>"
-    "</div>",
-    unsafe_allow_html=True
-)
+    # ── Footer ──
+    st.divider()
+    st.markdown(
+        "<div style='text-align: center; color: gray;'>"
+        "<small>MIM-Ops Pro v3.2 | Oracle Cloud Edition | © 2024</small>"
+        "</div>",
+        unsafe_allow_html=True
+    )
